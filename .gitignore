@@ -1,0 +1,12 @@
+.env
+.unifi_session.json
+profiles/
+network/
+radius/
+logs/
+.idea/
+test.py
+config.py
+!input/sites.json.SAMPLE
+input/
+backups/

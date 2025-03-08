@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 
-def process_controller(unifi, process_function, site_names, include_name_list, exclude_name_list):
+def process_controller(unifi, process_function, site_names, obj_class, include_name_list, exclude_name_list):
     """
        Processes a UniFi controller by authenticating and managing site data.
        This function connects to the specified UniFi controller, retrieves
@@ -39,17 +39,18 @@ def process_controller(unifi, process_function, site_names, include_name_list, e
         futures = []
         for site_name in site_names_to_process:
             # Pass the dynamic function
-            futures.append(executor.submit(process_function, unifi, site_name, include_name_list, exclude_name_list))
+            futures.append(executor.submit(process_function,
+                                           unifi, site_name, obj_class, include_name_list, exclude_name_list))
 
         # Wait for all site-processing threads to complete
         for future in as_completed(futures):
             try:
                 future.result()  # Block until a thread completes
             except Exception as e:
-                logger.error(f"Error processing site: {e}")
+                logger.exception(f"Error in process controller: {e}")
 
 
-def process_single_controller(controller, process_function, site_names, include_name_list, exclude_name_list,
+def process_single_controller(controller, process_function, site_names, obj_class, include_name_list, exclude_name_list,
                               username, password, mfa_secret, ):
     """
        Processes a single controller by delegating to the `process_controller` function.
@@ -71,6 +72,7 @@ def process_single_controller(controller, process_function, site_names, include_
         unifi=unifi,
         process_function=process_function,
         site_names=site_names,
+        obj_class=obj_class,
         include_name_list=include_name_list,
         exclude_name_list=exclude_name_list
     )
@@ -265,3 +267,85 @@ def backup(resource: dict, backup_dir: str):
     with open(backup_file_path, "w") as f:
         json.dump(backup_data, f, indent=4)
 
+def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
+    """
+    Retrieves and processes templates/items from a specific site on a UniFi controller
+    and saves the resulting item list after filtering based on include or exclude terms.
+
+    This function interacts with the UniFi API to access data specific to a given
+    site and processes the data based on the parameters provided. The filtered
+    results are serialized into JSON format and saved locally.
+
+    :param unifi: Instance of a UniFi controller to connect and retrieve data from.
+    :param site_name: Name of the site to retrieve items from.
+    :param obj_class: The class that represents the object type to retrieve.
+    :param include_names: List of names of items to include. Only items with these
+        names will be processed if specified.
+    :param exclude_names: List of names of items to exclude. Items with these
+        names will be omitted if specified.
+    :return: Returns a boolean indicating the success of the operation.
+    :rtype: bool
+    """
+    logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
+    ui_site = Sites(unifi, desc=site_name)
+
+    # get the list of items for the site
+    ui_object = obj_class(unifi, site=ui_site)
+    all_items = ui_object.all()
+    item_list = []
+
+    for item in all_items:
+        del item['site_id']
+        del item['_id']
+        if include_names:
+            # Only fetch items that have been requested
+            if item.get('name') in include_names:
+                item_list.append(item)
+        elif exclude_names:
+            if item.get('name') not in exclude_names:
+                continue
+        else:
+            # Fetch all item profiles
+            item_list.append(item)
+    logger.info(f'Saving {len(item_list)} {obj_class} to {obj_class.__name__.lower()}.')
+    save_dicts_to_json(item_list, obj_class.__name__.lower())
+    return True
+
+def delete_item_from_site(unifi, site_name: str, obj_class, include_names: list, exclude_names: list = None):
+    """
+    Deletes items from a specified site in a UniFi controller.
+
+    This function is responsible for deleting specified items from a site within a UniFi
+    controller. First, it fetches the item by its name to acquire an identifier. If the item
+    exists, it creates a backup of the item, attempts deletion, and logs the result. If the
+    item does not exist, it logs a warning and skips the deletion for that item.
+
+    :param unifi: UniFi controller instance used to perform actions.
+    :type unifi: object
+    :param site_name: The name of the site from which items will be deleted.
+    :type site_name: str
+    :param obj_class: The class type representing the object (e.g., devices, clients) that
+        needs to be deleted.
+    :type obj_class: type
+    :param include_names: A list of item names to be deleted from the specified site.
+    :type include_names: list
+    :param exclude_names: A list of item names to be excluded from deletion. Default is None.
+    :type exclude_names: list, optional
+    :return: None
+    """
+    ui_site = Sites(unifi, desc=site_name)
+    ui_object = obj_class(unifi, site=ui_site)
+
+    for name in include_names:
+        item_id = ui_object.get_id(name=name)
+        if item_id:
+            logger.info(f"Deleting {obj_class} '{name}' from site '{site}'")
+            item_to_backup = obj_class(unifi, site=ui_site).get(_id=item_id)
+            backup(item_to_backup, config.BACKUP_DIR)
+            response = ui_object.delete(item_id)
+            if response:
+                logger.info(f"Successfully deleted {obj_class} '{name}' from site '{site}'")
+            else:
+                logger.error(f"Failed to delete {obj_class} '{name}' from site '{site}': {response}")
+        else:
+            logger.warning(f"{obj_class} '{name}' does not exist on site '{site}', skipping deletion.")

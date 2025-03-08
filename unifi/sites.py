@@ -1,8 +1,11 @@
 from icecream import ic
 import logging
+from .portconf import PortConf
+from .device import Device
+from .radiusprofile import RadiusProfile
 logger = logging.getLogger(__name__)
 
-class Sites():
+class Sites:
     BASE_PATH = 'self'
     API_PATH = 'api'
 
@@ -18,6 +21,11 @@ class Sites():
             self._id = self.data.get('_id')
         if not self.name:
             self.name = self.data.get('name')
+
+        # Initialize resource classes
+        self.port_conf = PortConf(self.unifi, self)
+        self.device = Device(self.unifi, self)
+        self.radius_profile = RadiusProfile(self.unifi, self)
 
     def get(self):
         """

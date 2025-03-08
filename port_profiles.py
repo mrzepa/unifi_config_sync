@@ -10,7 +10,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
-from utils import process_single_controller, save_dicts_to_json, read_json_file
+from utils import (process_single_controller, save_dicts_to_json, read_json_file, delete_item_from_site,
+                   backup, get_valid_names_from_dir, validate_names)
 from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
@@ -26,28 +27,34 @@ warnings.simplefilter("ignore", InsecureRequestWarning)
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
-    """
-    Retrieve a list of object templates from a specified base site on the UniFi controller.
-    The function accesses the site specified by `site_name`, retrieves network and VLAN configurations,
-    and fetches objects of the specified class (`obj_class`). The objects can be filtered by inclusion or
-    exclusion lists for better customization.
 
-    :param unifi: An instance of the UniFi controller.
-    :param site_name: The name of the base site whose templates are to be retrieved.
-    :type site_name: str
-    :param obj_class: Class representing the type of objects to fetch.
-    :param include_names: Optional list of object names to specifically include in the result.
-                          If provided, only the objects matching these names will be included.
-    :type include_names: list, optional
-    :param exclude_names: Optional list of object names to specifically exclude from the result.
-                          If provided, objects matching these names will be skipped.
-    :type exclude_names: list, optional
-    :return: Boolean value indicating whether the operation was completed successfully.
+def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None,
+                                 exclude_names: list = None):
+    """
+    Retrieves and processes templates/items from a specific site on a UniFi controller
+    and saves the resulting item list after filtering based on include or exclude terms.
+
+    This function interacts with the UniFi API to access data specific to a given
+    site and processes the data based on the parameters provided. The filtered
+    results are serialized into JSON format and saved locally.
+
+    :param unifi: Instance of a UniFi controller to connect and retrieve data from.
+    :param site_name: Name of the site to retrieve items from.
+    :param obj_class: The class that represents the object type to retrieve.
+    :param include_names: List of names of items to include. Only items with these
+        names will be processed if specified.
+    :param exclude_names: List of names of items to exclude. Items with these
+        names will be omitted if specified.
+    :return: Returns a boolean indicating the success of the operation.
     :rtype: bool
     """
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
     ui_site = Sites(unifi, desc=site_name)
+
+    # get the list of items for the site
+    ui_object = obj_class(unifi, site=ui_site)
+    all_items = ui_object.all()
+    item_list = []
 
     # get the list of vlans for the site
     network = NetworkConf(unifi, site=ui_site)
@@ -56,34 +63,41 @@ def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names
     for network in networks:
         vlans.update({network['_id']: network['name']})
 
-    ui_object = obj_class(unifi, site=ui_site)
-    item_list = []
-
-    all_items = ui_object.all()
     for item in all_items:
         # remove site specific entries
         del item['site_id']
         del item['_id']
         # Need to keep track of the vlan names which is not part of the profile info
         if 'native_networkconf_id' in item:
-            item['native_networkconf_vlan_name'] = vlans.get(item['native_networkconf_id'])
+            if item['native_networkconf_id'] and item['native_networkconf_id'] in vlans:
+                item['native_networkconf_vlan_name'] = vlans[item['native_networkconf_id']]
+            else:
+                logger.warning(f"Item native_networkconf_id is missing or invalid: {item.get('native_networkconf_id')}")
         if 'voice_networkconf_id' in item:
-            item['voice_networkconf_vlan_name'] = vlans.get(item['voice_networkconf_id'])
+            if item['voice_networkconf_id'] and item['voice_networkconf_id'] in vlans:
+                item['voice_networkconf_vlan_name'] = vlans[item['voice_networkconf_id']]
+            else:
+                logger.warning(f"Item voice_networkconf_id is missing or invalid: {item.get('voice_networkconf_id')}")
         if "excluded_networkconf_ids" in item:
-            item["excluded_networkconf_vlan_names"] = [vlans.get(item_id) for item_id in item["excluded_networkconf_ids"]]
+            valid_excluded_names = [
+                vlans[port_id] for port_id in item["excluded_networkconf_ids"] if port_id in vlans
+            ]
+            item["excluded_networkconf_vlan_names"] = valid_excluded_names
 
         if include_names:
             # Only fetch items that have been requested
             if item.get('name') in include_names:
                 item_list.append(item)
         elif exclude_names:
-            continue
+            if item.get('name') not in exclude_names:
+                continue
         else:
-            # Fetch all items
+            # Fetch all item profiles
             item_list.append(item)
-    logger.info(f'Saving {len(all_items)} {ENDPOINT} to {endpoint_dir}.')
-    save_dicts_to_json(all_items, endpoint_dir)
+    logger.info(f'Saving {len(item_list)} {obj_class.__name__} to {obj_class.__name__.lower()}.')
+    save_dicts_to_json(item_list, obj_class.__name__.lower())
     return True
+
 
 def add_item_to_site(unifi: Unifi, site_name: str, obj_class, include_names: list, exclude_names: list = None):
     """
@@ -167,6 +181,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, obj_class, include_names: lis
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
             logger.error(f"Error processing file '{file_name}': {e}")
+
 
 def replace_items_at_site(unifi: Unifi, site_name: str, obj_class, include_names: list, exclude_names: list = None):
     """
@@ -340,6 +355,8 @@ if __name__ == "__main__":
     # Get the directory for storing the items
     endpoint_dir = 'portconf'
     os.makedirs(endpoint_dir, exist_ok=True)
+    valid_names = get_valid_names_from_dir(endpoint_dir)
+    logger.debug(f'Valid {ENDPOINT} names: {valid_names}')
     backup_dir = config.BACKUP_DIR
     site_names_path = config.SITE_NAMES
 
@@ -365,6 +382,7 @@ if __name__ == "__main__":
         logging.info(f"Option selected: Get {ENDPOINT}")
         process_fucntion = get_templates_from_base_site
         site_names = {base_site}
+        # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         if args.include_names:
             include_name_list = args.include_names
         if args.exclude_names:
@@ -373,10 +391,17 @@ if __name__ == "__main__":
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
         process_fucntion = add_item_to_site
+
         if args.include_names:
-            include_name_list = args.include_names
+            if validate_names(args.include_names, valid_names, 'include-names'):
+                include_name_list = args.include_names
+            else:
+                sys.exit(1)
         if args.exclude_names:
-            exclude_name_list = args.exclude_names
+            if validate_names(args.exclude_names, valid_names, 'exclude-names'):
+                exclude_name_list = args.exclude_names
+            else:
+                sys.exit(1)
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
@@ -385,9 +410,16 @@ if __name__ == "__main__":
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
             sys.exit(1)
 
-        # Log the items to be replaced
-        logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
-        include_names_list = args.include_names
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            # Log the items to be replaced
+            logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = replace_items_at_site
 
     elif args.delete:
@@ -395,8 +427,16 @@ if __name__ == "__main__":
         if not args.include_names:
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
             sys.exit(1)
-        logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
-        include_names_list = args.include_names
+
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = delete_item_from_site
 
     if process_fucntion:

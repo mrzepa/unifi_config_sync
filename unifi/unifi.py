@@ -7,8 +7,7 @@ import os
 import json
 from urllib3.exceptions import InsecureRequestWarning
 import pyotp
-from .portconf import PortConf
-from .device import Device
+
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
 
@@ -52,9 +51,6 @@ class Unifi:
         self.csrf_token = None
         self.load_session_from_file()
 
-        # # Initiazline resource classes
-        # self.port_conf = PortConf(self)
-        # self.device = Device(self)
 
         if not all([self.base_url, self.username, self.password, self.mfa_secret]):
             raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")

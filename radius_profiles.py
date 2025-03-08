@@ -11,11 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file
-from config import SITE_NAMES
+from config import SITE_NAMES, RADIUS_SERVERS
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import setup_logging, get_templates_from_base_site, delete_item_from_site, get_filtered_files, backup
+from utils import (setup_logging, get_templates_from_base_site, delete_item_from_site, get_filtered_files, backup,
+                   get_valid_names_from_dir, validate_names)
 from unifi.sites import Sites
 from unifi.radiusprofile import RadiusProfile
 
@@ -55,23 +56,30 @@ def add_item_to_site(unifi, site_name: str, obj_class, include_names: list = Non
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
 
+            # Add in the radius server secret
+            for idx, server in enumerate(new_item.get('auth_servers', [])):
+                ip = server.get('ip')
+                if ip in RADIUS_SERVERS:
+                    # Update 'x_secret' in the current server dictionary
+                    new_item['auth_servers'][idx]['x_secret'] = RADIUS_SERVERS[ip]
+
             # Check if the name already exists
             if item_name in existing_item_names:
-                logger.warning(f"{ENDPOINT} '{item_name}' already exists on site '{site}', skipping upload.")
+                logger.warning(f"{ENDPOINT} '{item_name}' already exists on site '{site_name}', skipping upload.")
                 continue
 
             # Make the request to add the item
-            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site}'")
+            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_object.create(new_item)
             if response:
-                logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site}'")
+                logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
                 logger.error(f"Failed to create {ENDPOINT} {item_name}: {response}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
-            logger.error(f"Error processing file '{file_name}': {e}")
+            logger.exception(f"Error processing file '{file_name}': {e}")
 
 def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
     ui_site = Sites(unifi, desc=site_name)
@@ -200,6 +208,7 @@ if __name__ == "__main__":
     # Get the directory for storing the items
     endpoint_dir = 'radiusprofile'
     os.makedirs(endpoint_dir, exist_ok=True)
+    valid_names = get_valid_names_from_dir(endpoint_dir)
     backup_dir = config.BACKUP_DIR
     site_names_path = config.SITE_NAMES
     try:
@@ -224,6 +233,7 @@ if __name__ == "__main__":
         logging.info(f"Option selected: Get {ENDPOINT}")
         process_fucntion = get_templates_from_base_site
         site_names = {base_site}
+        # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         if args.include_names:
             include_names_list = args.include_names
         if args.exclude_names:
@@ -233,9 +243,15 @@ if __name__ == "__main__":
         logging.info(f"Option selected: Add {ENDPOINT}")
         process_fucntion = add_item_to_site
         if args.include_names:
-            include_names_list = args.include_names
+            if validate_names(args.include_names, valid_names, 'include-names'):
+                include_name_list = args.include_names
+            else:
+                sys.exit(1)
         if args.exclude_names:
-            exclude_name_list = args.exclude_names
+            if validate_names(args.exclude_names, valid_names, 'exclude-names'):
+                exclude_name_list = args.exclude_names
+            else:
+                sys.exit(1)
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
@@ -244,9 +260,16 @@ if __name__ == "__main__":
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
             sys.exit(1)
 
-        # Log the items to be replaced
-        logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
-        include_names_list = args.include_names
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            # Log the items to be replaced
+            logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = replace_item_at_site
 
     elif args.delete:
@@ -255,7 +278,15 @@ if __name__ == "__main__":
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
             sys.exit(1)
         logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
-        include_names_list = args.include_names
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = delete_item_from_site
 
     if process_fucntion:

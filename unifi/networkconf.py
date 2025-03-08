@@ -1,14 +1,13 @@
 from unifi.resources import BaseResource
-from unifi.sites import Sites
 import logging
 logger = logging.getLogger(__name__)
 
 class NetworkConf(BaseResource):
     BASE_PATH = 'rest'
 
-    def __init__(self, unifi, site: Sites, **kwargs):
+    def __init__(self, unifi, site, **kwargs):
         self.unifi = unifi
-        self.site: Sites = site
+        self.site = site
         super().__init__(unifi, endpoint='networkconf', site=self.site, base_path=self.BASE_PATH, **kwargs)
 
 

@@ -1,6 +1,5 @@
 import logging
 from icecream import ic
-from unifi.sites import Sites
 from requests.exceptions import HTTPError
 
 logger = logging.getLogger(__name__)
@@ -14,7 +13,7 @@ class BaseResource:
         self.data: dict = {}  # Dict that contains all the info about this resource.
         self._id: int = None  # The resource ID
         self.name: str = kwargs.get('name', None)
-        self.site: Sites = kwargs.get('site', None)
+        self.site = kwargs.get('site', None)
         self.base_path: str = kwargs.get('base_path', None)
 
     def __str__(self):

@@ -1,8 +1,8 @@
 .env
 .unifi_session.json
-profiles/
-network/
-radius/
+portconf
+networkconf
+radiusprofile
 logs/
 .idea/
 test.py

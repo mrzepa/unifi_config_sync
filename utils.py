@@ -90,8 +90,9 @@ def save_dicts_to_json(dict_list, output_dir="output"):
         os.makedirs(output_dir, exist_ok=True)
 
         for item in dict_list:
-            if "name" in item:
-                filename = f"{item['name']}.json"
+            if "name" in item or "key" in item:
+                # Determine the filename based on "name" or "key"
+                filename = f"{item.get('name', item.get('key'))}.json"
                 filepath = os.path.join(output_dir, filename)
 
                 with open(filepath, "w", encoding="utf-8") as f:
@@ -267,6 +268,7 @@ def backup(resource: dict, backup_dir: str):
     with open(backup_file_path, "w") as f:
         json.dump(backup_data, f, indent=4)
 
+
 def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
     """
     Retrieves and processes templates/items from a specific site on a UniFi controller
@@ -307,7 +309,7 @@ def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names
         else:
             # Fetch all item profiles
             item_list.append(item)
-    logger.info(f'Saving {len(item_list)} {obj_class} to {obj_class.__name__.lower()}.')
+    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {obj_class.__name__.lower()}.')
     save_dicts_to_json(item_list, obj_class.__name__.lower())
     return True
 
@@ -349,3 +351,43 @@ def delete_item_from_site(unifi, site_name: str, obj_class, include_names: list,
                 logger.error(f"Failed to delete {obj_class} '{name}' from site '{site}': {response}")
         else:
             logger.warning(f"{obj_class} '{name}' does not exist on site '{site}', skipping deletion.")
+
+def get_valid_names_from_dir(directory: str) -> list:
+    """
+    Extract valid names (filenames without .json extension) from a given directory.
+
+    :param directory: Directory to retrieve files from
+    :return: List of filenames without the .json extension
+    """
+    try:
+        # List all files in the directory and filter out non-json files
+        valid_names = [os.path.splitext(file)[0] for file in os.listdir(directory) if file.endswith('.json')]
+        return valid_names
+    except FileNotFoundError:
+        logger.error(f"The directory {directory} does not exist.")
+        return []
+    except Exception as e:
+        logger.exception(f"An error occurred while retrieving files from {directory}: {e}")
+        return []
+
+def validate_names(provided_names: list, valid_names: list, include_exclude: str) -> bool:
+    """
+    Validate a list of provided names against a list of valid names within the context
+    of inclusion or exclusion. If any invalid names are found, they are logged as errors
+    with the associated context, and the function returns False. Otherwise, it returns
+    True if all names are valid.
+
+    :param provided_names: A list of names to validate.
+    :param valid_names: A list of valid names that the provided_names will be checked against.
+    :param include_exclude: A string indicating whether the context is for inclusion
+        or exclusion, used for logging purposes.
+    :return: A boolean indicating whether all provided names are valid.
+    """
+    provded_names_set = set(provided_names)
+    valid_names_set = set(valid_names)
+    if not provded_names_set.issubset(valid_names_set):
+        invalid_names = provded_names_set - valid_names_set  # Find invalid names
+        for invalid_name in invalid_names:
+            logger.error(f"Invalid name encountered in --{include_exclude}: {invalid_name}")
+        return False
+    return True

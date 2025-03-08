@@ -15,7 +15,8 @@ from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import setup_logging, get_templates_from_base_site, delete_item_from_site, get_filtered_files, backup
+from utils import (setup_logging, get_templates_from_base_site, delete_item_from_site, get_filtered_files,
+                   backup, get_valid_names_from_dir, validate_names)
 from unifi.sites import Sites
 from unifi.networkconf import NetworkConf
 
@@ -198,6 +199,7 @@ if __name__ == "__main__":
     # Get the directory for storing the items
     endpoint_dir = 'networkconf'
     os.makedirs(endpoint_dir, exist_ok=True)
+    valid_names = get_valid_names_from_dir(endpoint_dir)
     backup_dir = config.BACKUP_DIR
     site_names_path = config.SITE_NAMES
     try:
@@ -221,7 +223,8 @@ if __name__ == "__main__":
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
         process_fucntion = get_templates_from_base_site
-        site_names = {base_site}
+        site_names = {base_site}  # For the get we only worry about the base site
+        # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         if args.include_names:
             include_names_list = args.include_names
         if args.exclude_names:
@@ -231,9 +234,15 @@ if __name__ == "__main__":
         logging.info(f"Option selected: Add {ENDPOINT}")
         process_fucntion = add_item_to_site
         if args.include_names:
-            include_names_list = args.include_names
+            if validate_names(args.include_names, valid_names, 'include-names'):
+                include_name_list = args.include_names
+            else:
+                sys.exit(1)
         if args.exclude_names:
-            exclude_name_list = args.exclude_names
+            if validate_names(args.exclude_names, valid_names, 'exclude-names'):
+                exclude_name_list = args.exclude_names
+            else:
+                sys.exit(1)
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
@@ -242,9 +251,16 @@ if __name__ == "__main__":
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
             sys.exit(1)
 
-        # Log the items to be replaced
-        logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
-        include_names_list = args.include_names
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            # Log the items to be replaced
+            logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = replace_item_at_site
 
     elif args.delete:
@@ -253,8 +269,15 @@ if __name__ == "__main__":
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
             sys.exit(1)
 
-        logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
-        include_names_list = args.include_names
+        if not valid_names:
+            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
+            sys.exit(1)
+
+        if validate_names(args.include_names, valid_names, 'include-names'):
+            logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
+            include_name_list = args.include_names
+        else:
+            sys.exit(1)
         process_fucntion = delete_item_from_site
 
     if process_fucntion:

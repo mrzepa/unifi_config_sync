@@ -15,7 +15,7 @@ from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import setup_logging, delete_item_from_site, get_filtered_files, backup
+from utils import setup_logging, delete_item_from_site, get_filtered_files
 from unifi.sites import Sites
 from unifi.networkconf import NetworkConf
 from unifi.radiusprofile import RadiusProfile
@@ -27,8 +27,7 @@ warnings.simplefilter("ignore", InsecureRequestWarning)
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None,
-                                 exclude_names: list = None):
+def get_templates_from_base_site(unifi, site_name: str, context: dict):
     """
     Retrieves and processes templates/items from a specific site on a UniFi controller
     and saves the resulting item list after filtering based on include or exclude terms.
@@ -39,32 +38,32 @@ def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names
 
     :param unifi: Instance of a UniFi controller to connect and retrieve data from.
     :param site_name: Name of the site to retrieve items from.
-    :param obj_class: The class that represents the object type to retrieve.
-    :param include_names: List of names of items to include. Only items with these
-        names will be processed if specified.
-    :param exclude_names: List of names of items to exclude. Items with these
-        names will be omitted if specified.
+    :param context: A dictionary containing additional information for processing:
+        - `endpoint_dir` (str): Directory containing configuration files.
+        - `include_names` (list of str): List of file names to include.
+        - `exclude_names` (list of str, optional): List of file names to exclude.
     :return: Returns a boolean indicating the success of the operation.
     :rtype: bool
     """
+
+    endpoint_dir = context.get("endpoint_dir")
+    include_names = context.get("include_names", None)
+    ui_site = unifi.sites[site_name]
+    ui_site.output_dir = endpoint_dir
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
-    ui_site = Sites(unifi, desc=site_name)
 
     # get the list of items for the site
-    ui_object = obj_class(unifi, site=ui_site)
-    all_items = ui_object.all()
+    all_items = ui_site.setting.all()
     item_list = []
 
     # get the list of vlans for the site
-    network = NetworkConf(unifi, site=ui_site)
-    networks = network.all()
+    networks = ui_site.networkconf.all()
     vlans = {}
     for network in networks:
         vlans.update({network['_id']: network['name']})
 
     # get the radius profiles for the site
-    radius = RadiusProfile(unifi, site=ui_site)
-    radius_profiles = radius.all()
+    radius_profiles = ui_site.radiusprofile.all()
     radius_profiles_dict = {}
     for radius_profile in radius_profiles:
         radius_profiles_dict.update({radius_profile['_id']: radius_profile['name']})
@@ -88,11 +87,12 @@ def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names
             # Append the modified copy to your item_list
             item_list.append(filtered_item)
 
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {obj_class.__name__.lower()}.')
-    save_dicts_to_json(item_list, obj_class.__name__.lower())
+    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {ui_site.output_dir}.')
+    save_dicts_to_json(item_list, ui_site.output_dir)
     return True
 
-def update_settings_at_site(unifi: Unifi, site_name: str, obj_class, include_names: list, exclude_names: list = None):
+
+def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
     """
     Adds items to a specific site in the Unifi Controller by processing JSON files in a designated
     directory. Validates the existence of the target directory, reads configuration files, checks
@@ -101,19 +101,18 @@ def update_settings_at_site(unifi: Unifi, site_name: str, obj_class, include_nam
 
     :param unifi: The Unifi object to interact with the Unifi Controller.
     :param site_name: Name of the site in the Unifi Controller where items will be added.
-    :param obj_class: The class type for creating objects to interact with the Unifi API.
-    :param include_names: List of file names to include in the process.
-    :param exclude_names: Optional list of file names to exclude from the process.
+    :param context: A dictionary containing additional information for processing:
+        - `endpoint_dir` (str): Directory containing configuration files.
+        - `include_names` (list of str): List of file names to include.
+        - `exclude_names` (list of str, optional): List of file names to exclude.
     :return: None
     :raises ValueError: If the specified directory does not exist.
     :raises Exception: For failures in retrieving or uploading data from/to the Unifi Controller.
     """
-    ui_site = Sites(unifi, desc=site_name)
-    network = NetworkConf(unifi, site=ui_site)
-    ui_object = obj_class(unifi, site=ui_site)
+    ui_site = unifi.sites[site_name]
 
     vlans = {}
-    networks = network.all()
+    networks = ui_site.networkconf.all()
     for vlan in networks:
         vlans.update({vlan.get("name"): vlan.get("_id")})
 
@@ -130,7 +129,7 @@ def update_settings_at_site(unifi: Unifi, site_name: str, obj_class, include_nam
 
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_object.all()
+        existing_items = ui_site.setting.all()
         existing_item_names = {item.get("name") for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
@@ -147,7 +146,7 @@ def update_settings_at_site(unifi: Unifi, site_name: str, obj_class, include_nam
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_items = read_json_file(file_path)
             item_name = new_items.get("key")
-            item_id = ui_object.get(key=item_name).get("_id")
+            item_id = ui_site.setting.get(key=item_name).get("_id")
 
             # modify the item for site specific vlan IDs and Radius profiles
             for key, value in new_items.items():
@@ -162,8 +161,8 @@ def update_settings_at_site(unifi: Unifi, site_name: str, obj_class, include_nam
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            url = f"{ui_object.API_PATH}/{ui_site.name}/{ui_object.base_path}/{ui_object.endpoint}/{item_name}/{item_id}"
-            response = ui_object.make_request(url, 'PUT', data=new_items)
+            url = f"{ui_site.setting.API_PATH}/{ui_site.name}/{ui_site.setting.base_path}/{ui_site.setting.endpoint}/{item_name}/{item_id}"
+            response = ui_site.setting.make_request(url, 'PUT', data=new_items)
             if response.get("meta", {}).get('rc') == 'ok':
                 logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -246,10 +245,14 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'setting'
-    os.makedirs(endpoint_dir, exist_ok=True)
-    backup_dir = config.BACKUP_DIR
+    endpoint_dir = 'global_settings'
+    if os.path.exists(endpoint_dir):
+        valid_names = get_valid_names_from_dir(endpoint_dir)
+    else:
+        valid_names = []
+
     site_names_path = config.SITE_NAMES
+
     try:
         with open(site_names_path, 'r') as f:
             site_names = set(json.load(f))
@@ -283,7 +286,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     elif args.add:
-        print(f'Option: Add not allowed for {ENDPOINT}.')
+        logger.warning(f'Option: Add not allowed for {ENDPOINT}.')
         sys.exit(1)
 
     elif args.replace:
@@ -292,29 +295,31 @@ if __name__ == "__main__":
         if not args.include_names:
             logger.error(f"--replace requires a list of {ENDPOINT} keys to replace using --include-names. Valid keys are: {valid_keys}")
             sys.exit(1)
+        if not valid_names:
+            raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
 
         # Log the items to be replaced
         if validate_names(args.include_names, valid_keys, 'include-names'):
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
-            include_names_list = args.include_names
         else:
             sys.exit(1)
         process_fucntion = replace_item_at_site
 
     elif args.delete:
-        print(f'Option: Delete not allowed for {ENDPOINT}.')
+        logger.warning(f'Option: Delete not allowed for {ENDPOINT}.')
         sys.exit(1)
 
     if process_fucntion:
+        context = {'process_function': process_function,
+                   'site_names': site_names,
+                   'endpoint_dir': endpoint_dir,
+                   'include_names_list': args.include_names,
+                   'exclude_name_list': args.exclude_names, }
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:
             # Submit each controller to the thread pool for processing
             future_to_controller = {executor.submit(process_single_controller, controller,
-                                                    process_fucntion,
-                                                    site_names,
-                                                    Setting,
-                                                    include_names_list,
-                                                    exclude_name_list,
+                                                    context,
                                                     ui_username,
                                                     ui_password,
                                                     ui_mfa_secret): controller for controller in

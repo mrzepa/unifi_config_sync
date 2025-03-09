@@ -15,8 +15,7 @@ from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import (setup_logging, get_templates_from_base_site, delete_item_from_site, get_filtered_files,
-                   backup, get_valid_names_from_dir, validate_names)
+from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
 from unifi.sites import Sites
 from unifi.networkconf import NetworkConf
 
@@ -26,9 +25,115 @@ warnings.simplefilter("ignore", InsecureRequestWarning)
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-def add_item_to_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
-    ui_site = Sites(unifi, desc=site_name)
-    ui_object = obj_class(unifi, site=ui_site)
+def get_templates_from_base_site(unifi, site_name: str, context: dict):
+    """
+    Fetches and processes network configuration templates from a specified base site.
+
+    This function retrieves all network configuration items from the specified
+    site of the UniFi controller, filters the items based on provided inclusion
+    or exclusion criteria, and saves the resulting items into JSON files within
+    a specified directory. The filtering logic operates based on `include_names`
+    or `exclude_names` specified in the context. The resulting configuration
+    data are prepared for further use by removing non-essential fields such as
+    `site_id` and `_id`.
+
+    :param unifi: Controller instance used to interact with the UniFi API.
+    :type unifi: object
+    :param site_name: Name of the site to retrieve configuration templates from.
+    :type site_name: str
+    :param context: Dictionary containing additional parameters. Keys include
+                    'endpoint_dir' (directory for saving), 'include_names' (list
+                    of names to include), and 'exclude_names' (list of names to
+                    exclude).
+    :type context: dict
+    :return: Indicates whether the operation completed successfully.
+    :rtype: bool
+    """
+    endpoint_dir = context.get("endpoint_dir")
+    include_names = context.get("include_names", None)
+    exclude_names = context.get("exclude_names", None)
+    ui_site = unifi.sites[site_name]
+    ui_site.output_dir = endpoint_dir
+
+    logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
+    # get the list of items for the site
+    all_items = ui_site.networkconf.all()
+    item_list = []
+
+    for item in all_items:
+        del item['site_id']
+        del item['_id']
+        if include_names:
+            # Only fetch items that have been requested
+            if item.get('name') in include_names:
+                item_list.append(item)
+        elif exclude_names:
+            if item.get('name') not in exclude_names:
+                continue
+        else:
+            # Fetch all item profiles
+            item_list.append(item)
+    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {ui_site.output_dir}.')
+    save_dicts_to_json(item_list, ui_site.output_dir)
+    return True
+
+def delete_item_from_site(unifi, site_name: str, context: dict):
+    """
+    Deletes items from a specified site in the UniFi Controller based on the provided
+    context. The method allows deletion of specific network configurations from the
+    site and includes functionality to back up items before deletion.
+
+    :param unifi: Instance of the UniFi API client to interact with the UniFi Controller.
+    :param site_name: Name of the site where the items will be deleted.
+    :param context: A dictionary containing configuration for the deletion process.
+        - endpoint_dir: The directory of the API endpoint to be used.
+        - include_names: A list of item names to be deleted.
+        - exclude_names: An optional list of item names to be excluded from deletion.
+    :return: None
+    """
+    include_names = context.get("include_names")
+    ui_site = unifi.sites[site_name]
+
+    for name in include_names:
+        item_id = ui_site.networkconf.get_id(name=name)
+        if item_id:
+            logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
+            item_to_backup = ui_site.networkconf.get(_id=item_id)
+            item_to_backup.backup(config.BACKUP_DIR)
+            response = ui_site.networkconf.delete(item_id)
+            if response:
+                logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
+            else:
+                logger.error(f"Failed to delete {obj_class} '{name}' from site '{site_name}': {response}")
+        else:
+            logger.warning(f"{obj_class} '{name}' does not exist on site '{site_name}', skipping deletion.")
+
+
+def add_item_to_site(unifi, site_name: str, context: dict):
+    """
+    Adds configurations from specified files to a site's endpoint directory in the UniFi system. The
+    function first validates the existence of the provided directory, fetches the existing
+    configurations from the site, and selectively processes the files based on filtering
+    rules. If the configuration from a file already exists in the site, the function skips
+    uploading it. Otherwise, it uploads the new configuration and logs the success or failure
+    of the operation. Errors such as invalid JSON or file processing issues are logged
+    appropriately.
+
+    :param unifi: The UniFi system object used to interact with sites and configurations.
+    :param site_name: The name of the UniFi site where configurations are to be added.
+    :type site_name: str
+    :param context: A dictionary containing the context of the operation, which includes:
+        - **endpoint_dir** (*str*): Path to the directory containing JSON configuration files.
+        - **include_names** (*list*, optional): List of file names to include during processing.
+        - **exclude_names** (*list*, optional): List of file names to exclude during processing.
+        Defaults to None for both optional filters.
+    :type context: dict
+    :return: None
+    """
+    endpoint_dir = context.get("endpoint_dir")
+    include_names = context.get("include_names", None)
+    exclude_names = context.get("exclude_names", None)
+    ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
@@ -37,7 +142,7 @@ def add_item_to_site(unifi, site_name: str, obj_class, include_names: list = Non
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_object.all()
+        existing_items = ui_site.networkconf.all()
         existing_item_names = {vlan.get("name") for vlan in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
@@ -62,7 +167,7 @@ def add_item_to_site(unifi, site_name: str, obj_class, include_names: list = Non
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site}'")
-            response = ui_object.create(new_item)
+            response = ui_site.networkconf.create(new_item)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} config '{item_name}' at site '{site}'")
             else:
@@ -71,11 +176,34 @@ def add_item_to_site(unifi, site_name: str, obj_class, include_names: list = Non
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
-            logger.error(f"Error processing file '{file_name}': {e}")
+            logger.exception(f"Error processing file '{file_name}': {e}")
 
-def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
-    ui_site = Sites(unifi, desc=site_name)
-    ui_object = obj_class(unifi, site=ui_site)
+def replace_item_at_site(unifi, site_name: str, context: dict):
+    """
+    Replaces or updates items at a specific site in the UniFi framework using
+    provided configurations. The function performs operations to ensure the
+    consistency and accuracy of VLAN configurations. It reads JSON configuration
+    files from the specified directory, processes them, and applies the updates
+    to the provided UniFi site while replacing any existing configurations that
+    correspond to the same name.
+
+    This function ensures backup of existing configurations, removal of stale
+    items, and upload of new configurations.
+
+    :param unifi: The UniFi API client instance used to interact with the UniFi framework.
+    :param site_name: The name of the site where items are to be replaced or updated.
+    :type site_name: str
+    :param context: A dictionary containing additional information for processing:
+        - `endpoint_dir` (str): Directory containing configuration files.
+        - `include_names` (list of str): List of file names to include.
+        - `exclude_names` (list of str, optional): List of file names to exclude.
+    :type context: dict
+    :return: None
+    """
+    endpoint_dir = context.get("endpoint_dir")
+    include_names = context.get("include_names")
+    exclude_names = context.get("exclude_names", None)
+    ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
@@ -84,7 +212,7 @@ def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list =
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} for site '{site_name}'")
-        existing_items = ui_object.all()
+        existing_items = ui_site.networkconf.all()
         existing_item_map = {item.get("name"): item for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {list(existing_item_map.keys())}")
     except Exception as e:
@@ -106,9 +234,9 @@ def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list =
                 item_to_delete = existing_item_map[item_name]
                 item_id = item_to_delete.get("_id")
                 if item_id:
-                    item_to_backup = obj_class(unifi, site=ui_site).get(_id=item_id)
-                    backup(item_to_backup, config.BACKUP_DIR)
-                    delete_response = ui_object.delete(item_id)
+                    item_to_backup = ui_site.networkconf.get(_id=item_id)
+                    item_to_backup.backup(config.BACKUP_DIR)
+                    delete_response = ui_site.networkconf.delete(item_id)
                     if not delete_response:
                         continue
                 else:
@@ -116,7 +244,7 @@ def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list =
                     continue
             # Make the request to add the item config
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_object.create(new_item)
+            response = ui_site.networkconf.create(new_item)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -124,7 +252,7 @@ def replace_item_at_site(unifi, site_name: str, obj_class, include_names: list =
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
-            logger.error(f"Error processing file '{file_name}': {e}")
+            logger.exception(f"Error processing file '{file_name}': {e}")
 
 
 if __name__ == "__main__":
@@ -197,10 +325,11 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'networkconf'
-    os.makedirs(endpoint_dir, exist_ok=True)
-    valid_names = get_valid_names_from_dir(endpoint_dir)
-    backup_dir = config.BACKUP_DIR
+    endpoint_dir = 'network_configs'
+    if os.path.exists(endpoint_dir):
+        valid_names = get_valid_names_from_dir(endpoint_dir)
+    else:
+        valid_names = []
     site_names_path = config.SITE_NAMES
     try:
         with open(site_names_path, 'r') as f:
@@ -225,23 +354,19 @@ if __name__ == "__main__":
         process_fucntion = get_templates_from_base_site
         site_names = {base_site}  # For the get we only worry about the base site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
-        if args.include_names:
-            include_names_list = args.include_names
-        if args.exclude_names:
-            exclude_name_list = args.exclude_names
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
         process_fucntion = add_item_to_site
+
+        if not valid_names:
+            raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
+
         if args.include_names:
-            if validate_names(args.include_names, valid_names, 'include-names'):
-                include_name_list = args.include_names
-            else:
+            if not validate_names(args.include_names, valid_names, 'include-names'):
                 sys.exit(1)
         if args.exclude_names:
-            if validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                exclude_name_list = args.exclude_names
-            else:
+            if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
                 sys.exit(1)
 
     elif args.replace:
@@ -252,13 +377,11 @@ if __name__ == "__main__":
             sys.exit(1)
 
         if not valid_names:
-            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
-            sys.exit(1)
+            raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
 
         if validate_names(args.include_names, valid_names, 'include-names'):
             # Log the items to be replaced
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
-            include_name_list = args.include_names
         else:
             sys.exit(1)
         process_fucntion = replace_item_at_site
@@ -270,26 +393,25 @@ if __name__ == "__main__":
             sys.exit(1)
 
         if not valid_names:
-            logger.error(f"No {ENDPOINT} files found in the directory '{endpoint_dir}'.")
-            sys.exit(1)
+            raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
 
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
-            include_name_list = args.include_names
         else:
             sys.exit(1)
         process_fucntion = delete_item_from_site
 
     if process_fucntion:
+        context = {'process_function': process_function,
+                   'site_names': site_names,
+                   'endpoint_dir': endpoint_dir,
+                   'include_names_list': args.include_names,
+                   'exclude_name_list': args.exclude_names,}
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:
             # Submit each controller to the thread pool for processing
             future_to_controller = {executor.submit(process_single_controller, controller,
-                                                    process_fucntion,
-                                                    site_names,
-                                                    NetworkConf,
-                                                    include_names_list,
-                                                    exclude_name_list,
+                                                    context,
                                                     ui_username,
                                                     ui_password,
                                                     ui_mfa_secret): controller for controller in

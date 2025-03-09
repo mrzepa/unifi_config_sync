@@ -8,6 +8,7 @@ class RadiusProfile(BaseResource):
     def __init__(self, unifi, site, **kwargs):
         self.unifi = unifi
         self.site = site
-        super().__init__(unifi, endpoint='radiusprofile', site=self.site, base_path=self.BASE_PATH, **kwargs)
+        self.output_dir: str = kwargs.get('output_dir', "radiusprofiles")
+        super().__init__(unifi, site, endpoint='radiusprofile', base_path=self.BASE_PATH, **kwargs)
 
 

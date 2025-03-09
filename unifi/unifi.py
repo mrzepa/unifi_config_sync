@@ -40,7 +40,6 @@ class Unifi:
     """
     SESSION_FILE = os.path.expanduser("~/.unifi_session.json")
 
-
     def __init__(self, base_url=None, username=None, password=None, mfa_secret=None):
         self.base_url = base_url
         self.username = username
@@ -50,7 +49,7 @@ class Unifi:
         self.session_cookie = None
         self.csrf_token = None
         self.load_session_from_file()
-
+        self.sites = self.get_sites()
 
         if not all([self.base_url, self.username, self.password, self.mfa_secret]):
             raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")
@@ -183,7 +182,7 @@ class Unifi:
             logger.error(f"An error occurred: {e}")
             return None
 
-    def get_site_list(self):
+    def get_sites(self):
         """
         Fetches a list of site names from the Unifi controller and saves them to a JSON file.
 
@@ -198,16 +197,22 @@ class Unifi:
         :rtype: list[str]
         :raises ValueError: If no sites are found during the API request.
         """
-        path = "/api/self/sites"
-        site_names = []
 
         logger.debug(f'Fetching sites from Unifi controller.')
-        sites = self.make_request(path)
-        if not sites:
+        response = self.make_request("/api/self/sites", "GET")
+
+        if not response:
             raise ValueError(f'No sites found.')
-        if sites.get('meta', {}).get('rc') == 'ok':
-            for site in sites.get('data', []):
-                site_names.append(site.get('desc'))
-            return site_names
+        if response.get('meta', {}).get('rc') == 'ok':
+            sites = response.get("data", [])
+            return {site["desc"]: Site(self, site) for site in sites}
         else:
-            logger.error(sites.get('meta', {}).get('msg'))
+            logger.error(response.get('meta', {}).get('msg'))
+
+    def site(self, name):
+        """Get a single site by name."""
+        return self.sites.get(name)
+
+    def __getitem__(self, name):
+        """Shortcut for accessing a site."""
+        return self.site(name)

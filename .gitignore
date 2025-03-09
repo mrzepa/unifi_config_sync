@@ -10,3 +10,4 @@ config.py
 !input/sites.json.SAMPLE
 input/
 backups/
+setting/

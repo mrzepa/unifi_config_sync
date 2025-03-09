@@ -1,8 +1,6 @@
 from unifi.resources import BaseResource
 import logging
-
 logger = logging.getLogger(__name__)
-
 
 class Device(BaseResource):
     BASE_PATH = 'stat'
@@ -10,6 +8,7 @@ class Device(BaseResource):
     def __init__(self, unifi, site, **kwargs):
         self.unifi = unifi
         self.site = site
-        super().__init__(unifi, endpoint='device', site=self.site, base_path=self.BASE_PATH, **kwargs)
+        self.output_dir: str = kwargs.get('output_dir', "devices")
+        super().__init__(unifi, site, endpoint='device', base_path=self.BASE_PATH, **kwargs)
 
 

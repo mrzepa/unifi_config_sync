@@ -12,22 +12,26 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 
-def process_controller(unifi, process_function, site_names, obj_class, include_name_list, exclude_name_list):
+def process_controller(unifi, context: dict):
     """
-       Processes a UniFi controller by authenticating and managing site data.
-       This function connects to the specified UniFi controller, retrieves
-       the available sites, and utilizes a thread pool to process each site concurrently.
+    This function processes sites related to a given controller. It checks for matching site names between the
+    provided context and the controller's available sites. For each matching site, the function executes a
+    dynamically passed processing function in a multi-threaded manner using a ThreadPoolExecutor. Logging is
+    done for debugging and issue identification.
 
-       :param exclude_name_list: List of items to be excluded (e.g. profile names)
-       :param include_name_list:  List of items to be included (e.g. profile names)
-       :param unifi: Unifi object
-       :param site_names: Set of site names to be processed
-       :param process_function: A callable function to process each site (e.g., add_profiles_to_site).
-       :return: None
-       """
-
-    # Fetch sites
-    ui_site_names_set = set(unifi.get_site_list())
+    :param unifi: Represents the controller object that contains available site details and functionalities.
+    :type unifi: object
+    :param context: A dictionary containing the context for site processing. It includes the list of site names
+                    to match and a reference to the dynamic processing function for execution.
+    :type context: dict
+    :return: Returns None if no matching sites are found or if processing completes successfully.
+    :rtype: None
+    """
+    site_names = context.get("site_names", [])
+    process_function = context.get("process_function")
+    # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
+    # site names provided.
+    ui_site_names_set = set(unifi.sites.keys())
     site_names_to_process = list(site_names.intersection(ui_site_names_set))
     logger.debug(f'Found {len(site_names_to_process)} sites to process for this controller.')
     if len(site_names_to_process) == 0:
@@ -40,7 +44,7 @@ def process_controller(unifi, process_function, site_names, obj_class, include_n
         for site_name in site_names_to_process:
             # Pass the dynamic function
             futures.append(executor.submit(process_function,
-                                           unifi, site_name, obj_class, include_name_list, exclude_name_list))
+                                           unifi, site_name, context))
 
         # Wait for all site-processing threads to complete
         for future in as_completed(futures):
@@ -50,31 +54,24 @@ def process_controller(unifi, process_function, site_names, obj_class, include_n
                 logger.exception(f"Error in process controller: {e}")
 
 
-def process_single_controller(controller, process_function, site_names, obj_class, include_name_list, exclude_name_list,
-                              username, password, mfa_secret, ):
+def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str):
     """
-       Processes a single controller by delegating to the `process_controller` function.
+    Processes a single controller by creating a Unifi instance, authenticating, and delegating the
+    controller processing task. This function acts as a wrapper that prepares and initializes
+    necessary parameters and context for controller processing.
 
-       :param exclude_name_list: List of items to be excluded (e.g. profile names)
-       :param include_name_list: List of UI items to be included (e.g. profile names)
-       :param username: Username for accessing the UniFi controller.
-       :param password: Password for accessing the UniFi controller.
-       :param mfa_secret: MFA secret required for further authentication.
-       :param site_names: Set of site names to be processed
-       :param controller: The controller object to be processed.
-       :type controller: Controller
-       :param process_function: A callable function to process each site.
-       :return: None
-       """
+    :param controller: The controller instance to be processed.
+    :param context: Dictionary containing the context required for processing the controller.
+    :param username: Username to authenticate with the controller.
+    :param password: Password to authenticate with the controller.
+    :param mfa_secret: MFA secret for additional authentication layer.
+    :return: The result of processing the given controller.
+    """
     unifi = Unifi(controller, username, password, mfa_secret)
     unifi.authenticate()
     return process_controller(
         unifi=unifi,
-        process_function=process_function,
-        site_names=site_names,
-        obj_class=obj_class,
-        include_name_list=include_name_list,
-        exclude_name_list=exclude_name_list
+        context=context,
     )
 
 def save_dicts_to_json(dict_list, output_dir="output"):
@@ -198,159 +195,6 @@ def get_filtered_files(directory: str, include_names: list = None, exclude_names
     # If neither include_names nor exclude_names is provided, return all files
     return [os.path.join(directory, f) for f in all_files]
 
-def backup(resource: dict, backup_dir: str):
-    """
-    Backup the configuration of the given resource before deleting it and clean up older backups.
-
-    Each backup file is named after `Site.desc` and stores the configuration in the following structure:
-    - object.endpoint:
-        - date and time:
-            - data
-
-    Files older than 4 months are deleted automatically.
-
-    :param resource: The resource object to back up. Must have `site` and `endpoint` attributes.
-    :param backup_dir: Path to the directory where backups will be stored.
-    """
-    # Ensure the backup directory exists
-    if not os.path.exists(backup_dir):
-        os.makedirs(backup_dir)
-        logger.info(f"Backup directory created: {backup_dir}")
-
-    # Get the site description and endpoint
-    site_desc = resource.site.desc
-    endpoint = resource.endpoint
-    item_id = resource._id
-
-    # Current date and time for backup categorization
-    now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-
-    # Backup file path
-    backup_file_path = os.path.join(backup_dir, f"{site_desc}.json")
-
-    # Prepare the backup data structure
-    backup_data = {}
-    if os.path.exists(backup_file_path):
-        try:
-            with open(backup_file_path, "r") as f:
-                backup_data = json.load(f)  # Load existing backup
-        except json.JSONDecodeError:
-            logger.warning(f"Backup file {backup_file_path} is corrupted. A new backup will be created.")
-
-    if endpoint not in backup_data:
-        backup_data[endpoint] = {}
-
-    # Retrieve configuration to be backed up
-    data = resource.data
-
-    # Add the new backup at the current timestamp and item_id
-    if timestamp not in backup_data[endpoint]:
-        backup_data[endpoint][timestamp] = {}
-
-    backup_data[endpoint][timestamp][item_id] = data
-
-    # Write back to the backup file
-    with open(backup_file_path, "w") as f:
-        json.dump(backup_data, f, indent=4)
-        logger.info(f"Configuration backed up for site '{site_desc}' at endpoint '{endpoint}'.")
-
-    # Clean up old backups (older than 4 months)
-    cutoff_date = now - timedelta(days=4 * 30)  # Approximate 4 months as 120 days
-
-    for date_str in list(backup_data[endpoint].keys()):
-        backup_date = datetime.strptime(date_str, "%Y-%m-%d_%H-%M-%S")
-        if backup_date < cutoff_date:
-            del backup_data[endpoint][date_str]
-            logger.info(f"Deleted old backup from {date_str} for '{endpoint}'.")
-
-    # Save cleaned data back to the backup file
-    with open(backup_file_path, "w") as f:
-        json.dump(backup_data, f, indent=4)
-
-
-def get_templates_from_base_site(unifi, site_name: str, obj_class, include_names: list = None, exclude_names: list = None):
-    """
-    Retrieves and processes templates/items from a specific site on a UniFi controller
-    and saves the resulting item list after filtering based on include or exclude terms.
-
-    This function interacts with the UniFi API to access data specific to a given
-    site and processes the data based on the parameters provided. The filtered
-    results are serialized into JSON format and saved locally.
-
-    :param unifi: Instance of a UniFi controller to connect and retrieve data from.
-    :param site_name: Name of the site to retrieve items from.
-    :param obj_class: The class that represents the object type to retrieve.
-    :param include_names: List of names of items to include. Only items with these
-        names will be processed if specified.
-    :param exclude_names: List of names of items to exclude. Items with these
-        names will be omitted if specified.
-    :return: Returns a boolean indicating the success of the operation.
-    :rtype: bool
-    """
-    logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
-    ui_site = Sites(unifi, desc=site_name)
-
-    # get the list of items for the site
-    ui_object = obj_class(unifi, site=ui_site)
-    all_items = ui_object.all()
-    item_list = []
-
-    for item in all_items:
-        del item['site_id']
-        del item['_id']
-        if include_names:
-            # Only fetch items that have been requested
-            if item.get('name') in include_names:
-                item_list.append(item)
-        elif exclude_names:
-            if item.get('name') not in exclude_names:
-                continue
-        else:
-            # Fetch all item profiles
-            item_list.append(item)
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {obj_class.__name__.lower()}.')
-    save_dicts_to_json(item_list, obj_class.__name__.lower())
-    return True
-
-def delete_item_from_site(unifi, site_name: str, obj_class, include_names: list, exclude_names: list = None):
-    """
-    Deletes items from a specified site in a UniFi controller.
-
-    This function is responsible for deleting specified items from a site within a UniFi
-    controller. First, it fetches the item by its name to acquire an identifier. If the item
-    exists, it creates a backup of the item, attempts deletion, and logs the result. If the
-    item does not exist, it logs a warning and skips the deletion for that item.
-
-    :param unifi: UniFi controller instance used to perform actions.
-    :type unifi: object
-    :param site_name: The name of the site from which items will be deleted.
-    :type site_name: str
-    :param obj_class: The class type representing the object (e.g., devices, clients) that
-        needs to be deleted.
-    :type obj_class: type
-    :param include_names: A list of item names to be deleted from the specified site.
-    :type include_names: list
-    :param exclude_names: A list of item names to be excluded from deletion. Default is None.
-    :type exclude_names: list, optional
-    :return: None
-    """
-    ui_site = Sites(unifi, desc=site_name)
-    ui_object = obj_class(unifi, site=ui_site)
-
-    for name in include_names:
-        item_id = ui_object.get_id(name=name)
-        if item_id:
-            logger.info(f"Deleting {obj_class} '{name}' from site '{site}'")
-            item_to_backup = obj_class(unifi, site=ui_site).get(_id=item_id)
-            backup(item_to_backup, config.BACKUP_DIR)
-            response = ui_object.delete(item_id)
-            if response:
-                logger.info(f"Successfully deleted {obj_class} '{name}' from site '{site}'")
-            else:
-                logger.error(f"Failed to delete {obj_class} '{name}' from site '{site}': {response}")
-        else:
-            logger.warning(f"{obj_class} '{name}' does not exist on site '{site}', skipping deletion.")
 
 def get_valid_names_from_dir(directory: str) -> list:
     """

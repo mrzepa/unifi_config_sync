@@ -32,22 +32,7 @@ cd unifi-profile-manager
 ---
 
 ### 2. Set Up Your Environment Variables
-
-Create a `.env` file in the root directory of the project to include your UniFi credentials and other configuration options.
-
-Example `.env` file:
-```plaintext
-UI_USERNAME=your_unifi_username
-UI_PASSWORD=your_unifi_password
-UI_MFA_SECRET=your_mfa_secret_key
-MAX_CONTROLLER_THREADS=2 # Number of UniFi controllers to process concurrently
-MAX_THREADS=8            # Total threads available for operations
-```
-
-- Replace `your_unifi_username`, `your_unifi_password`, and `your_mfa_secret_key` with your UniFi credentials.
-
----
-### Obtaining the UniFi OTP Seed (MFA Secret)
+#### Obtaining the UniFi OTP Seed (MFA Secret)
 
 The OTP seed (also referred to as the MFA Secret) is required for Multi-Factor Authentication and must be added to the `.env` file. Follow these steps to obtain it:
 
@@ -68,12 +53,21 @@ The OTP seed (also referred to as the MFA Secret) is required for Multi-Factor A
    - The text output will contain the OTP seed (a base32 string). This is your `UI_MFA_SECRET`.
    - Make sure to select App authentication as your primary MFA.
 
-5. Add the OTP seed to your `.env` file:
-   ```plaintext
-   UI_MFA_SECRET=your-otp-seed
-   ```
-
 If you do not have 2FA enabled, you will need to set it up to generate a new OTP seed.
+
+Create a `.env` file in the root directory of the project to include your UniFi credentials and other configuration options.
+
+Example `.env` file:
+```plaintext
+UI_USERNAME=your_unifi_username
+UI_PASSWORD=your_unifi_password
+UI_MFA_SECRET=your_mfa_secret_key
+```
+
+- Replace `your_unifi_username`, `your_unifi_password`, and `your_mfa_secret_key` with your UniFi credentials.
+
+---
+
 ### 3. Set Up the `config.py` File
 The base site is the name of the site that contains the port profiles that are to be copied to all other sites.
 
@@ -84,12 +78,25 @@ The `config.py` file contains configuration data for the controllers, base site,
    ```
 2. Open `config.py` and update it with your details (e.g., controller IP addresses, site name, and directories):
    ```python
-   PROFILE_DIR = 'profiles'
    INPUT_DIR = 'input'
+   BACKUP_DIR = 'backup'
    BASE_SITE = 'Default'
    
-   ```
+   SITE_NAMES = 'site_names.json'
+   
+   CONTROLLERS = [
+    'https://192.168.1.1:8443',
+     'https://192.168.1.2:8443',
+   ]
 
+   MAX_THREADS = 8
+   
+   RADIUS_SERVERS = {
+    '10.1.1.10': 'abc123',
+    '10.2.2.10': '123abc'
+   }
+   ```
+* Since the radius server secrets can't be copied from the base site, they need to be supplied here in a dict with the radius server IP address as the key and the secret as the value.
 ---
 
 ### 4. Install Python Dependencies
@@ -103,50 +110,88 @@ pip install -r requirements.txt    # Install dependencies
 ---
 
 ## Running the Script
+The script provides several options for syncing configuration items across UniFi sites. These include fetching configuration items like port profiles from the base site and applying them to other sites, while also allowing for explicit control over which items to include or exclude.
 
-1. Activate the Python virtual environment:
+### General Workflow:
+
+1. **Fetch Items from the Base Site**  
+   Retrieve the port profiles or other configuration items from the site designated as the base site:
    ```bash
-   source venv/bin/activate
+   python3 port_profiles.py --get
    ```
-2. Run the script to get the port profiles from the base site:
+   Alternatively, if you already have the configuration items in a JSON format, you can directly place them into the directory specified by `endpoint_dir` in the script.
+
+2. **Sync Items to Target Sites**  
+   Apply the items from the base site to other sites:
    ```bash
-   python3 main.py --get
+   python3 port_profiles.py --add
    ```
-   Alternativly, if you already have the port profiles in json format, you can place them into the directory specified by `PROFILES_DIR`.
-3. Run the script to add the port profiles to all other sites:
-    ```bash
-   python3 main.py --add
-    ```
+
+   To specify a limited number of sites, edit the JSON file defined by `SITE_NAMES` in your `config.py`. This file includes a list of UniFi site names where the configuration will be applied.
+
 ---
 
-## Configuration Details
+### Using Include/Exclude Options
 
-### `.env` File Configuration:
-MAX_THREADS should be equal to the number of cores on the computer this is run on.
-MAX_CONTROLLER_THREADS is the number of controllers to connect to concurently. This must be less than MAX_THREADS.
+You can customize the behavior of the script using the `--include-names` or `--exclude-names` options, which allow you to specify the exact configuration items to process by name. 
 
-The `.env` file is used for sensitive data (like credentials) and runtime parameters:
-- `UI_USERNAME`: Your UniFi username, e.g., `admin@domain.com`.
-- `UI_PASSWORD`: Password for the UniFi account.
-- `UI_MFA_SECRET`: MFA key for two-factor authentication.
-- `CONFIG_FILE`: Config file path, usually `config.yaml`.
-- `MAX_CONTROLLER_THREADS`: Number of UniFi controllers to handle concurrently (default: 2).
-- `MAX_THREADS`: Maximum number of threads used for processing (default: 8).
-
-### `config.yaml` Configuration:
-The `config.yaml` file handles all other configuration:
-- **UNIFI.PROFILE_DIR**: Directory containing the profiles in JSON format.
-- **UNIFI.CONTROLLERS**: List of UniFi controllers to process.
-- **UNIFI.BASE_SITE**: Site name to manage within each controller (e.g., `"default"`).
-
-Example with a single controller:
-```yaml
-UNIFI:
-  PROFILE_DIR: profiles
-  CONTROLLERS:
-  - https://192.168.1.1:8443
-  BASE_SITE: default
+For example, to sync only the port profile named `8021x`:
+```bash
+python3 port_profiles.py --add --include-names 8021x
 ```
+
+To exclude profiles named `guest` and `default`:
+```bash
+python3 port_profiles.py --add --exclude-names guest,default
+```
+
+---
+
+### Using the `--replace` Option
+
+The `--replace` option ensures that existing configuration items on target sites are replaced with the new data from the base site. This action requires the `--include-names` option to explicitly define the items you want to replace. 
+
+**Example: Replace Only Specific Port Profiles**  
+Suppose you want to replace the port profiles named `8021x` and `AdminLAN` on target sites:
+```bash
+python3 port_profiles.py --replace --include-names 8021x,AdminLAN
+```
+
+**Why This Is Required:**  
+When using `--replace`, the script avoids unintentional data loss by requiring you to specify exactly which items should be overwritten with `--include-names`. This ensures precision and prevents accidental replacement across all items.
+
+---
+
+### Using the `--delete` Option
+
+The `--delete` option allows you to remove specific configuration items from the target sites. As with `--replace`, this feature requires the `--include-names` option so that you can explicitly define which items to delete.
+
+**Important Note:** Before executing a delete operation, the script automatically creates a backup for the item(s) being deleted. These backups are stored in the directory defined as `BACKUP_DIR` in your `config.py`, and each backup is saved as a JSON file for easy restoration if needed.
+
+**Example: Delete Specific Port Profiles**  
+Suppose you want to delete the port profiles named `oldProfile` and `GuestAccess`:
+```bash
+python3 port_profiles.py --delete --include-names oldProfile,GuestAccess
+```
+
+**Why This Is Required:**  
+The `--include-names` option ensures you explicitly select which configuration items to delete, providing a safeguard against accidentally removing items.
+
+**Backup Details:**  
+- Each delete operation triggers an automatic backup of the configuration items being removed.  
+- Backups are saved as JSON files in the directory specified by `BACKUP_DIR`, named after the item being deleted.  
+- These backups ensure you can restore deleted items if necessary.
+
+---
+
+### Best Practices
+- 
+- Always use the `--get` option to back up the existing configuration before making changes or deletions.
+- Use `--include-names` and `--exclude-names` to limit the scope of operations, especially when working in production environments.
+- Test the script in a staging environment before applying changes or deletions to live controllers.
+- Ensure the `BACKUP_DIR` is properly configured and the backups are periodically secured to prevent data loss.
+
+By following these examples and guidelines, you can confidently manage UniFi configurations, whether you're scaling network setups, restructuring configurations, or cleaning up obsolete profiles.
 
 ---
 

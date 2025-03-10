@@ -58,6 +58,7 @@ class Unifi:
             raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")
 
         self.load_session_from_file()
+        self.authenticate()
         self.sites = self.get_sites()
 
     def save_session_to_file(self):

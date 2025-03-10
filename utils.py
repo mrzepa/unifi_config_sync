@@ -134,7 +134,6 @@ def process_single_controller(controller, context: dict, username: str, password
     :return: The result of processing the given controller.
     """
     unifi = Unifi(controller, username, password, mfa_secret)
-    unifi.authenticate()
 
     if not unifi.sites:
         return None

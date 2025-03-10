@@ -17,7 +17,6 @@ import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
 from unifi.sites import Sites
-from unifi.networkconf import NetworkConf
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)

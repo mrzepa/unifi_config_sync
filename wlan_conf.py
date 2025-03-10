@@ -11,13 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file
-from config import SITE_NAMES
+from config import SITE_NAMES, SITE_DATA_DIR, SITE_DATA_FILE
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
 from unifi.sites import Sites
-from unifi.networkconf import NetworkConf
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -55,24 +54,64 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
 
+    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
+
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
+    radius_profiles = site_data.get("radius_profiles")
+    user_groups = site_data.get("user_groups")
+    ap_groups = site_data.get("ap_groups")
+
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
     # get the list of items for the site
-    all_items = ui_site.network_conf.all()
+    all_items = ui_site.wlan_conf.all()
     item_list = []
 
     for item in all_items:
-        del item['site_id']
-        del item['_id']
-        if include_names:
-            # Only fetch items that have been requested
-            if item.get('name') in include_names:
-                item_list.append(item)
-        elif exclude_names:
-            if item.get('name') not in exclude_names:
-                continue
-        else:
-            # Fetch all item profiles
-            item_list.append(item)
+        if not include_names or any(value in include_names for key, value in item.items()):
+            # Copy the dictionary and remove unwanted keys in the process
+            filtered_item = item.copy()  # Create a copy of the original `item` dictionary
+
+            # Remove unnecessary keys in the copy
+            filtered_item.pop('site_id', None)
+            filtered_item.pop('_id', None)
+
+            # Add usergroup_id name if available
+            if 'usergroup_id' in item:
+                usergroup_id = item.get('usergroup_id')
+                usergroup_name = next((name for name, id_ in user_groups.items() if id_ == usergroup_id), None)
+                if usergroup_name:
+                    filtered_item['usergroup_id_name'] = usergroup_name
+
+            # Add radiusprofile_id name if available
+            if 'radiusprofile_id' in item:
+                radiusprofile_id = item.get('radiusprofile_id')
+                radiusprofile_name = next((name for name, id_ in radius_profiles.items() if id_ == radiusprofile_id),
+                                          None)
+                if radiusprofile_name:
+                    filtered_item['radiusprofile_id_name'] = radiusprofile_name
+
+            # Add networkconf_id name if available
+            if 'networkconf_id' in item:
+                networkconf_id = item.get('networkconf_id')
+                networkconf_name = next((name for name, id_ in vlans.items() if id_ == networkconf_id), None)
+                if networkconf_name:
+                    filtered_item['networkconf_id_name'] = networkconf_name
+
+            # Add names for ap_group_ids if available
+            if 'ap_group_ids' in item:
+                ap_group_ids = item.get('ap_group_ids', [])
+                ap_group_names = [
+                    name for name, id_ in ap_groups.items() if id_ in ap_group_ids
+                ]
+                if ap_group_names:
+                    filtered_item['ap_group_ids_name'] = ap_group_names
+
+            # Append the modified copy to your item_list
+            item_list.append(filtered_item)
+    ic(item_list)
     logger.info(f'Saving {len(item_list)} Network Configs in directory {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
@@ -95,12 +134,12 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
     ui_site = unifi.sites[site_name]
 
     for name in include_names:
-        item_id = ui_site.network_conf.get_id(name=name)
+        item_id = ui_site.wlan_conf.get_id(name=name)
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
-            item_to_backup = ui_site.network_conf.get(_id=item_id)
+            item_to_backup = ui_site.wlan_conf.get(_id=item_id)
             item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.network_conf.delete(item_id)
+            response = ui_site.wlan_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -135,6 +174,16 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
+    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
+
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
+    radius_profiles = site_data.get("radius_profiles")
+    user_groups = site_data.get("user_groups")
+    ap_groups = site_data.get("ap_groups")
+
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
         raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist.")
@@ -142,9 +191,9 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_site.network_conf.all()
-        existing_item_vlans = {vlan.get("vlan"): vlan.get("name") for vlan in existing_items}
-        logger.debug(f"Existing {ENDPOINT}: {existing_item_vlans}")
+        existing_items = ui_site.wlan_conf.all()
+        existing_item_names = {item.get("name") for item in existing_items}
+        logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")
         raise
@@ -159,42 +208,38 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
-            item_vlan = new_item.get("vlan")
+            if item_name in existing_item_names:
+                logger.debug(f'WLAN {item_name} already exists at site {site_name}, skipping upload.')
+                continue
 
-            # Check if the VLAN already exists and handle it properly
-            if item_vlan in existing_item_vlans:
-                existing_name = existing_item_vlans[item_vlan]
+            # Add vlans ID if the corresponding name exists
+            vlan_name = new_item.get("networkconf_id_name")
+            if vlan_name and vlan_name in vlans:
+                new_item["networkconf_id"] = vlans[vlan_name]
 
-                # Case 1: VLAN exists but names differ – log a warning
-                if existing_name != item_name:
-                    logger.warning(
-                        f"VLAN '{item_vlan}' already exists on site '{site_name}' "
-                        f"with a different name '{existing_name}'. New name: '{item_name}'."
-                    )
-                    continue
-                # Case 2: VLAN and names match – log a debug message and skip
-                elif existing_name == item_name:
-                    logger.debug(
-                        f"VLAN '{item_vlan}' with name '{item_name}' already exists "
-                        f"on site '{site_name}'. Skipping upload."
-                    )
-                    continue
+            # Add radiusprofile ID if the corresponding name exists
+            radius_name = new_item.get("radiusprofile_id_name")
+            if radius_name and radius_name in radius_profiles:
+                new_item["radiusprofile_id"] = radius_profiles[radius_name]
+
+            # Add usergroup ID if the corresponding name exists
+            usergroup_name = new_item.get("usergroup_id_name")
+            if usergroup_name and usergroup_name in user_groups:
+                new_item["usergroup_id"] = user_groups[usergroup_name]
+
+            # Add ap_group_ids if the corresponding names exist
+            ap_group_names = new_item.get("ap_group_ids_name", [])
+            if ap_group_names:
+                ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                if ap_group_ids:  # Only add if there are valid IDs
+                    new_item["ap_group_ids"] = ap_group_ids
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.network_conf.create(new_item)
-            if response.get('rc') == 'error':
-                if response.get('msg') == 'api.err.VlanUsed':
-                    if response.get('msg') == 'api.err.VlanUsed':
-                        logger.error(
-                            f"Failed to upload {ENDPOINT} '{item_name}' to site '{site_name}' - "
-                            f"VLAN ID '{item_vlan}' is already in use."
-                        )
-                    else:
-                        logger.error(
-                            f"Unexpected error while uploading {ENDPOINT} '{item_name}' "
-                            f"to site '{site_name}': {response.get('msg')}"
-                        )
+            response = ui_site.wlan_conf.create(new_item)
+            if isinstance(response, dict):
+                if response.get('rc') == 'error':
+                    logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {response.get("msg")}')
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -228,6 +273,16 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
+    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
+
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
+    radius_profiles = site_data.get("radius_profiles")
+    user_groups = site_data.get("user_groups")
+    ap_groups = site_data.get("ap_groups")
+
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
         raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist.")
@@ -235,15 +290,16 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} for site '{site_name}'")
-        existing_items = ui_site.network_conf.all()
-        existing_item_map = {vlan.get("vlan"): vlan for vlan in existing_items}  # Map VLANs to full items
-        logger.debug(f"Existing {ENDPOINT}: {existing_item_map.keys()}")
+        existing_items = ui_site.wlan_conf.all()
+        existing_item_map = {item.get("name"): item for item in existing_items}
+        logger.debug(f"Existing {ENDPOINT}: {list(existing_item_map.keys())}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} for site '{site_name}': {e}")
         raise
 
     # Get files to process from the items directory
     files = get_filtered_files(endpoint_dir, include_names, exclude_names)
+
     # Process selected files
     for file_path in files:
         file_name = os.path.basename(file_path)
@@ -251,35 +307,46 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
-            item_vlan = new_item.get("vlan")
 
-            if not item_name or not item_vlan:
-                logger.error(f"Invalid item in file '{file_name}': missing 'name' or 'vlan'.")
-                continue
             # Check if the VLAN exists in the existing items
-            if item_vlan in existing_item_map:
-                existing_item = existing_item_map[item_vlan]
-                existing_name = existing_item.get("name")
+            if item_name in existing_item_map:
+                existing_item = existing_item_map[item_name]
                 item_id = existing_item.get("_id")  # Retrieve the _id for the update
 
                 if not item_id:
                     logger.error(
-                        f"Existing VLAN '{item_vlan}' has no '_id'. Unable to replace this item. Skipping."
+                        f"Existing item '{item_name}' has no '_id'. Unable to replace this item. Skipping."
                     )
                     continue
 
-                # Log if the names differ
-                if item_name != existing_name:
-                    logger.info(
-                        f"Replacing VLAN '{item_vlan}' with new name '{item_name}', "
-                        f"replacing existing name '{existing_name}', at site '{site_name}'."
-                    )
-                item_to_backup = ui_site.network_conf.get(_id=item_id)
+                item_to_backup = ui_site.wlan_conf.get(_id=item_id)
                 item_to_backup.backup(config.BACKUP_DIR)
+
+                # Add vlans ID if the corresponding name exists
+                vlan_name = new_item.get("networkconf_id_name")
+                if vlan_name and vlan_name in vlans:
+                    new_item["networkconf_id"] = vlans[vlan_name]
+
+                # Add radiusprofile ID if the corresponding name exists
+                radius_name = new_item.get("radiusprofile_id_name")
+                if radius_name and radius_name in radius_profiles:
+                    new_item["radiusprofile_id"] = radius_profiles[radius_name]
+
+                # Add usergroup ID if the corresponding name exists
+                usergroup_name = new_item.get("usergroup_id_name")
+                if usergroup_name and usergroup_name in user_groups:
+                    new_item["usergroup_id"] = user_groups[usergroup_name]
+
+                # Add ap_group_ids if the corresponding names exist
+                ap_group_names = new_item.get("ap_group_ids_name", [])
+                if ap_group_names:
+                    ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                    if ap_group_ids:  # Only add if there are valid IDs
+                        new_item["ap_group_ids"] = ap_group_ids
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")
-                response = ui_site.network_conf.update(new_item, item_id)
+                response = ui_site.wlan_conf.update(new_item, item_id)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -288,7 +355,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
 
 
 if __name__ == "__main__":
-    ENDPOINT = 'Network Configuration'
+    ENDPOINT = 'WLAN Configuration'
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
 
     # Add the verbose flag
@@ -357,7 +424,7 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'network_configs'
+    endpoint_dir = 'wlan_configs'
     if os.path.exists(endpoint_dir):
         valid_names = get_valid_names_from_dir(endpoint_dir)
     else:

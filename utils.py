@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from unifi.unifi import Unifi
-from config import MAX_SITE_THREADS
+from config import MAX_SITE_THREADS, SITE_DATA_DIR, SITE_DATA_FILE
 import logging
 import json
 import os
@@ -11,6 +11,60 @@ from icecream import ic
 
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()
+site_data_lock = threading.Lock()
+
+def build_site_data(unifi, site_name):
+    ui_site = unifi.sites[site_name]
+    output_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+
+    # Get all the local vlans
+    vlans = {}
+    networks = ui_site.network_conf.all()
+    for vlan in networks:
+        if vlan.get("name") == 'Default':
+            continue
+        vlans.update({vlan.get("name"): vlan.get("_id")})
+
+    # Get all the local radius profiles
+
+    radius_profiles_dict = {}
+    radius_profiles = ui_site.radius_profile.all()
+    for radius_profile in radius_profiles:
+        if radius_profile.get("name") == 'Default':
+            continue
+        radius_profiles_dict.update({radius_profile.get("name"): radius_profile.get("_id")})
+
+    # Get all local user groups
+    user_groups_dict = {}
+    user_groups = ui_site.user_group.all()
+    for user_group in user_groups:
+        if user_group.get("name") == 'Default':
+            continue
+        user_groups_dict.update({user_group.get("name"): user_group.get("_id")})
+
+    # Get all local ap groups
+    ap_groups_dict = {}
+    ap_groups = ui_site.ap_groups.all()
+    for ap_group in ap_groups:
+        ap_groups_dict.update({ap_group.get("name"): ap_group.get("_id")})
+
+    # Group data by site name
+    site_data = {
+        site_name: {
+            "vlans": vlans,
+            "radius_profiles": radius_profiles_dict,
+            "user_groups": user_groups_dict,
+            "ap_groups": ap_groups_dict,
+        }
+    }
+
+    with site_data_lock:
+        try:
+            os.makedirs(SITE_DATA_DIR, exist_ok=True)
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                json.dump(site_data, f, indent=4)
+        except Exception as e:
+            logger.error(f'Failed to save site data to {output_filename}: {e}')
 
 def process_controller(unifi, context: dict):
     """
@@ -37,6 +91,18 @@ def process_controller(unifi, context: dict):
     if len(site_names_to_process) == 0:
         logger.warning(f'No matching sites to process for controller {unifi.base_url}')
         return None
+
+    with ThreadPoolExecutor(max_workers=MAX_SITE_THREADS) as executor:
+        futures = []
+        for site_names in site_names_to_process:
+            futures.append(executor.submit(build_site_data, unifi, site_names))
+
+        # Wait for all site-processing threads to complete
+        for future in as_completed(futures):
+            try:
+                future.result()  # Block until a thread completes
+            except Exception as e:
+                logger.exception(f"Error in process controller: {e}")
 
     # Process sites using ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=MAX_SITE_THREADS) as executor:

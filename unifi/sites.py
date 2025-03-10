@@ -5,6 +5,9 @@ from .device import Device
 from .radiusprofile import RadiusProfile
 from .setting import Setting
 from .networkconf import NetworkConf
+from .wlanconf import WlanConf
+from .usergroup import UserGroup
+from .apgroups import ApGroups
 logger = logging.getLogger(__name__)
 
 class Sites:
@@ -26,6 +29,9 @@ class Sites:
         self.radius_profile = RadiusProfile(self.unifi, self)
         self.setting = Setting(self.unifi, self)
         self.network_conf = NetworkConf(self.unifi, self)
+        self.wlan_conf = WlanConf(self.unifi, self)
+        self.user_group = UserGroup(self.unifi, self)
+        self.ap_groups = ApGroups(self.unifi, self)
 
     def __str__(self):
         return f"{self.__class__.__name__}: {self.desc}"

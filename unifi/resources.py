@@ -11,7 +11,6 @@ file_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 class BaseResource:
-    API_PATH = "/api/s"
 
     def __init__(self, unifi, site, endpoint, **kwargs):
         self.unifi = unifi
@@ -20,7 +19,8 @@ class BaseResource:
         self._id: int = None  # The resource ID
         self.name: str = kwargs.get('name', None)
         self.site = site
-        self.base_path: str = kwargs.get('base_path', 'rest')
+        self.base_path: str = kwargs.get('base_path', None)
+        self.api_path: str = kwargs.get('api_path', None)
 
     def __str__(self):
         return f"{self.__class__.__name__}: {self.name}"
@@ -57,7 +57,10 @@ class BaseResource:
                             matching resources or multiple matches.
         """
         site_name = self.site.name
-        url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}"
+        if self.base_path:
+            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
+        else:
+            url = f"{self.api_path}/{site_name}/{self.endpoint}"
         matching_items = []
         all_items = self.unifi.make_request(url, 'GET')
         if all_items.get("meta", {}).get('rc') == 'ok':
@@ -93,8 +96,13 @@ class BaseResource:
         :rtype: list
         """
         site_name = self.site.name
-        url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}"
+        if self.base_path:
+            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
+        else:
+            url = f"{self.api_path}/{site_name}/{self.endpoint}"
         all_items = self.unifi.make_request(url, 'GET')
+        if isinstance(all_items, list):
+            return all_items
         if all_items.get("meta", {}).get('rc') == 'ok':
             return all_items.get('data', [])
         else:
@@ -155,7 +163,10 @@ class BaseResource:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
-        url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}"
+        if self.base_path:
+            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
+        else:
+            url = f"{self.api_path}/{site_name}/{self.endpoint}"
         response = self.unifi.make_request(url, 'POST', data=data)
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully created {self.endpoint} at site '{site_name}'")
@@ -170,9 +181,15 @@ class BaseResource:
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
         if path:
-            url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}/{path}"
+            if self.base_path:
+                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{path}"
+            else:
+                url = f"{self.api_path}/{site_name}/{self.endpoint}/{path}"
         else:
-            url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}/{self._id}"
+            if self.base_path:
+                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{self._id}"
+            else:
+                url = f"{self.api_path}/{site_name}/{self.endpoint}/{self._id}"
             path = None
         response = self.unifi.make_request(url, 'PUT', data=data)
         if response.get("meta", {}).get('rc') == 'ok':
@@ -201,7 +218,10 @@ class BaseResource:
             item_id = self._id
         if not item_id:
             raise ValueError(f'Item ID required to delete {self.endpoint}.')
-        url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}/{item_id}"
+        if self.base_path:
+            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{item_id}"
+        else:
+            url = f"{self.api_path}/{site_name}/{self.endpoint}/{item_id}"
         response = self.unifi.make_request(url, 'DELETE')
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully deleted {self.endpoint} with ID {item_id} at site '{site_name}'")

@@ -15,3 +15,5 @@ input/
 backups/
 setting/
 global_settings
+wlan_configs
+site_data

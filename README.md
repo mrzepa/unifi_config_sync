@@ -1,11 +1,11 @@
-# UniFi Profile Manager
+# UniFi Configuration Sync Manager
 
-This project is designed to manage port profiles on UniFi network controllers. It reads profiles from a directory, compares them to existing profiles on the UniFi site, and ensures no duplicate profiles with the same name are uploaded.
-
+This project is designed to manage common configuration bits on UniFi network controllers. It reads configurations from a directory, compares them to existing configurations on the UniFi site to keep them in sync.
 ## Features
-- Fetch existing port profiles from a UniFi controller.
-- Compare and avoid uploading duplicate profiles.
-- Add new profiles from a JSON file directory to specified sites.
+- Fetch existing configurations from a UniFi controller.
+- Add new configurations from a JSON file directory to specified sites.
+- Replace configurations from a JSON file directory to specified sites.
+- Deletes configurations from specified sites.
 - Support multiple UniFi controllers and sites handled concurrently for performance.
 
 ---
@@ -98,6 +98,8 @@ The `config.py` file contains configuration data for the controllers, base site,
    ```
 * Since the radius server secrets can't be copied from the base site, they need to be supplied here in a dict with the radius server IP address as the key and the secret as the value.
 ---
+### Setup The Include Sites list
+TBD
 
 ### 4. Install Python Dependencies
 Set up a Python virtual environment and install the required dependencies:

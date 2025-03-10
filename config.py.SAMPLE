@@ -1,0 +1,49 @@
+# Global configuration options
+import os
+
+# Name of the site to sync data from.
+BASE_SITE = 'Default'
+
+# List of controllers
+CONTROLLERS = [
+     'https://192.168.1.1:8443',
+     'https://192.168.1.2:8443'
+]
+# directories
+INPUT_DIR = 'input'
+BACKUP_DIR = 'backups'
+os.makedirs(INPUT_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+if len(CONTROLLERS) == 0:
+    raise ValueError(f'At least one controller must be specified in config.py.')
+
+# name of the file that contains the list of site names to sync data too.
+SITE_NAMES_FILE = 'site_names.json'
+SITE_NAMES = os.path.join(INPUT_DIR, SITE_NAMES_FILE)
+
+# Threading limits
+# The scripts can process multiple controllers concurrently and for each controller it can process
+# multiple sites concurrently.
+MAX_THREADS = 8  # Define threads based on available system cores
+
+# Set MAX_CONTROLLER_THREADS with a cap at MAX_THREADS / 2.
+MAX_CONTROLLER_THREADS = min(len(CONTROLLERS), MAX_THREADS // 2)
+# Uncomment the line below to manually set MAX_CONTROLLER_THREADS
+# MAX_CONTROLLER_THREADS =
+if MAX_CONTROLLER_THREADS <= 0:
+    raise ValueError("MAX_CONTROLLER_THREADS must be at least 1.")
+
+# Although the MAX_SITE_THREADS can technically exceed MAX_THREADS, it is best to keep the combination of
+# MAX_SITE_THREADS + MAX_CONTROLLER_THREADS less than or equal to MAX_THREADS
+MAX_SITE_THREADS = (MAX_THREADS - MAX_CONTROLLER_THREADS) // len(CONTROLLERS)
+# Uncomment the line below to manually set MAX_SITE_THREADS
+# MAX_SITE_THREADS =
+if MAX_SITE_THREADS <= 0:
+    raise ValueError("MAX_SITE_THREADS must be at least 1.")
+
+# Radius server names
+RADIUS_SERVERS = {
+    '10.1.1.2': 'abc123',
+    '10.2.2.4': '123abc'
+}

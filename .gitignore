@@ -1,8 +1,11 @@
 .env
 .unifi_session.json
 portconf
+port_profiles
 networkconf
+network_configs
 radiusprofile
+radius_profiles
 logs/
 .idea/
 test.py
@@ -11,3 +14,4 @@ config.py
 input/
 backups/
 setting/
+global_settings

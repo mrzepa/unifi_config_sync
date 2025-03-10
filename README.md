@@ -9,7 +9,14 @@ This project is designed to manage common configuration bits on UniFi network co
 - Support multiple UniFi controllers and sites handled concurrently for performance.
 
 ---
+### Currently Supported Configs to Sync
+- Networks (vlans)
+- Port Profiles
+- Radius Profiles
+- WLANs
+- Global Settings for `global_switch`
 
+---
 ## Requirements
 - Python 3.12+
 - Dependencies:

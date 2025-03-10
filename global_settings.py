@@ -10,12 +10,12 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
-from utils import process_single_controller, save_dicts_to_json, read_json_file, validate_names
+from utils import process_single_controller, save_dicts_to_json, read_json_file, validate_names, get_valid_names_from_dir
 from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import setup_logging, delete_item_from_site, get_filtered_files
+from utils import setup_logging, get_filtered_files
 from unifi.sites import Sites
 from unifi.networkconf import NetworkConf
 from unifi.radiusprofile import RadiusProfile
@@ -47,7 +47,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     """
 
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
+    include_names = context.get("include_names_list", None)
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
@@ -57,13 +57,13 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     item_list = []
 
     # get the list of vlans for the site
-    networks = ui_site.networkconf.all()
+    networks = ui_site.network_conf.all()
     vlans = {}
     for network in networks:
         vlans.update({network['_id']: network['name']})
 
     # get the radius profiles for the site
-    radius_profiles = ui_site.radiusprofile.all()
+    radius_profiles = ui_site.radius_profile.all()
     radius_profiles_dict = {}
     for radius_profile in radius_profiles:
         radius_profiles_dict.update({radius_profile['_id']: radius_profile['name']})
@@ -87,7 +87,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
             # Append the modified copy to your item_list
             item_list.append(filtered_item)
 
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {ui_site.output_dir}.')
+    logger.info(f'Saving {len(item_list)} Global Settings in directory {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
 
@@ -110,14 +110,14 @@ def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
     :raises Exception: For failures in retrieving or uploading data from/to the Unifi Controller.
     """
     ui_site = unifi.sites[site_name]
-
+    include_names = context.get("include_names_list")
+    exclude_names = context.get("exclude_name_list")
     vlans = {}
-    networks = ui_site.networkconf.all()
+    networks = ui_site.network_conf.all()
     for vlan in networks:
         vlans.update({vlan.get("name"): vlan.get("_id")})
 
-    radius = RadiusProfile(unifi, site=ui_site)
-    radius_profiles = radius.all()
+    radius_profiles = ui_site.radius_profile.all()
     radius_profiles_dict = {}
     for radius_profile in radius_profiles:
         radius_profiles_dict.update({radius_profile.get("name"): radius_profile.get("_id")})
@@ -130,7 +130,7 @@ def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
         existing_items = ui_site.setting.all()
-        existing_item_names = {item.get("name") for item in existing_items}
+        existing_item_names = {item.get("key") for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")
@@ -146,32 +146,31 @@ def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_items = read_json_file(file_path)
             item_name = new_items.get("key")
-            item_id = ui_site.setting.get(key=item_name).get("_id")
+            for item in existing_items:
+                if item.get("key") == item_name:
+                    item_id = item.get("_id")
+                    break
+            else:
+                logger.error(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
+                raise ValueError(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
 
             # modify the item for site specific vlan IDs and Radius profiles
             for key, value in new_items.items():
-                if key == "dot1x_fallback_networkconf_id":
-                    new_items[key] = vlans['dot1x_fallback_networkconf_vlan_name']
-                    # no longer need the custom vlan name
-                    del new_items['dot1x_fallback_networkconf_vlan_name']
-                if key == "radiusprofile_id":
-                    new_items[key] = vlans['radiusprofile_id_name']
-                    # no longer need the custom radius profile name
-                    del new_items['radiusprofile_id_name']
+                if key == "dot1x_fallback_networkconf_id" and new_items['dot1x_fallback_networkconf_id']:
+                    new_items[key] = vlans[new_items['dot1x_fallback_networkconf_vlan_name']]
+
+                if key == "radiusprofile_id" and new_items['radiusprofile_id']:
+                    new_items[key] = radius_profiles_dict[new_items['radiusprofile_id_name']]
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            url = f"{ui_site.setting.API_PATH}/{ui_site.name}/{ui_site.setting.base_path}/{ui_site.setting.endpoint}/{item_name}/{item_id}"
-            response = ui_site.setting.make_request(url, 'PUT', data=new_items)
-            if response.get("meta", {}).get('rc') == 'ok':
-                logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
-            else:
-                logger.error(f"Failed to update {ENDPOINT} {item_name}: {response}")
+            path = f"{item_name}/{item_id}"
+            ui_site.setting.update(data=new_items, path=path)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
-            logger.error(f"Error processing file '{file_name}': {e}")
+            logger.exception(f"Error processing file '{file_name}': {e}")
 
 
 if __name__ == "__main__":
@@ -303,14 +302,14 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = replace_item_at_site
+        process_fucntion = update_settings_at_site
 
     elif args.delete:
         logger.warning(f'Option: Delete not allowed for {ENDPOINT}.')
         sys.exit(1)
 
     if process_fucntion:
-        context = {'process_function': process_function,
+        context = {'process_function': process_fucntion,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

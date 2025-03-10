@@ -48,18 +48,18 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     """
 
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
 
     # get the list of items for the site
-    all_items = ui_site.portconf.all()
+    all_items = ui_site.port_conf.all()
     item_list = []
 
     # get the list of vlans for the site
-    networks = ui_site.networkconf.all()
+    networks = ui_site.network_conf.all()
     vlans = {}
     for network in networks:
         vlans.update({network['_id']: network['name']})
@@ -95,7 +95,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
         else:
             # Fetch all item profiles
             item_list.append(item)
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} to {ui_site.output_dir}.')
+    logger.info(f'Saving {len(item_list)} Port Profiles to {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
 
@@ -114,16 +114,16 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names: An optional list of item names to be excluded from deletion.
     :return: None
     """
-    include_names = context.get("include_names")
+    include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
     for name in include_names:
-        item_id = ui_site.portconf.get_id(name=name)
+        item_id = ui_site.port_conf.get_id(name=name)
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
-            item_to_backup = ui_site.portconf.get(_id=item_id)
+            item_to_backup = ui_site.port_conf.get(_id=item_id)
             item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.portconf.delete(item_id)
+            response = ui_site.port_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -149,10 +149,10 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
     :raises Exception: For failures in retrieving or uploading data from/to the Unifi Controller.
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
-    networks = ui_site.networkconf.all()
+    networks = ui_site.network_conf.all()
 
     vlans = {}
     for vlan in networks:
@@ -165,7 +165,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
 
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_site.portconf.all()
+        existing_items = ui_site.port_conf.all()
         existing_item_names = {item.get("name") for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
@@ -190,22 +190,22 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
 
             # modify the item for site specific vlan IDs
             for key, value in new_items.items():
-                if key == "native_networkconf_id":
-                    new_items[key] = vlans['native_networkconf_vlan_name']
-                    # no longer need the custom vlan name
-                    del new_items['native_networkconf_vlan_name']
-                if key == "voice_networkconf_id":
-                    new_items[key] = vlans['voice_networkconf_vlan_name']
-                    # no longer need the custom vlan name
-                    del new_items['voice_networkconf_vlan_name']
+                if key == "native_networkconf_id" and new_items['native_networkconf_id']:
+                    new_items[key] = vlans[new_items['native_networkconf_vlan_name']]
+
+                if key == "voice_networkconf_id" and new_items['voice_networkconf_id']:
+                    new_items[key] = vlans[new_items['voice_networkconf_vlan_name']]
+
                 if key == "excluded_networkconf_ids":
-                    new_items[key] = [vlan_id for vlan_id in vlans['excluded_networkconf_vlan_names']]
-                    # no longer need the custom vlan name
-                    del new_items['excluded_networkconf_vlan_names']
+                    excluded_vlan_names = new_items.get("excluded_networkconf_vlan_names", None)
+
+                    if excluded_vlan_names and isinstance(excluded_vlan_names, list):
+                        # Build the list using the 'vlans' dictionary
+                        new_items[key] = [vlans[vlan_name] for vlan_name in excluded_vlan_names if vlan_name in vlans]
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.portconf.create(new_items)
+            response = ui_site.port_conf.create(new_items)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -213,8 +213,10 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
+        except KeyError as e:
+            logger.exception(f"Missing required key in file '{file_name}': {e}")
         except Exception as e:
-            logger.error(f"Error processing file '{file_name}': {e}")
+            logger.exception(f"Error processing file '{file_name}': {e}")
 
 
 def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
@@ -239,10 +241,10 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
-    networks = ui_site.networkconf.all()
+    networks = ui_site.network_conf.all()
 
     vlans = {}
     for vlan in networks:
@@ -256,7 +258,7 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
     # Fetch existing items from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_site.portconf.all()
+        existing_items = ui_site.port_conf.all()
         existing_item_map = {item.get("name"): item for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {list(existing_item_map.keys())}")
     except Exception as e:
@@ -279,9 +281,9 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
                 item_to_delete = existing_item_map[item_name]
                 item_id = item_to_delete.get("_id")
                 if item_id:
-                    item_to_backup = ui_site.portconf.get(_id=item_id)
+                    item_to_backup = ui_site.port_conf.get(_id=item_id)
                     item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.portconf.delete(item_id)
+                    delete_response = ui_site.port_conf.delete(item_id)
                     if not delete_response:
                         continue
                 else:
@@ -305,7 +307,7 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.portconf.create(new_item)
+            response = ui_site.port_conf.create(new_item)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -466,7 +468,7 @@ if __name__ == "__main__":
         process_fucntion = delete_item_from_site
 
     if process_fucntion:
-        context = {'process_function': process_function,
+        context = {'process_function': process_fucntion,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

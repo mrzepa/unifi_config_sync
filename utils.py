@@ -7,7 +7,7 @@ import os
 import threading
 from unifi.sites import Sites
 from datetime import datetime, timedelta
-
+from icecream import ic
 
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()
@@ -33,7 +33,7 @@ def process_controller(unifi, context: dict):
     # site names provided.
     ui_site_names_set = set(unifi.sites.keys())
     site_names_to_process = list(site_names.intersection(ui_site_names_set))
-    logger.debug(f'Found {len(site_names_to_process)} sites to process for this controller.')
+    logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')
     if len(site_names_to_process) == 0:
         logger.warning(f'No matching sites to process for controller {unifi.base_url}')
         return None
@@ -69,6 +69,9 @@ def process_single_controller(controller, context: dict, username: str, password
     """
     unifi = Unifi(controller, username, password, mfa_secret)
     unifi.authenticate()
+
+    if not unifi.sites:
+        return None
     return process_controller(
         unifi=unifi,
         context=context,

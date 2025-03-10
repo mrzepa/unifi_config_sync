@@ -7,6 +7,10 @@ import os
 import json
 from urllib3.exceptions import InsecureRequestWarning
 import pyotp
+import threading
+from .sites import Sites
+
+file_lock = threading.Lock()
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -39,6 +43,7 @@ class Unifi:
     :type csrf_token: Optional[str]
     """
     SESSION_FILE = os.path.expanduser("~/.unifi_session.json")
+    _session_data = {}  # Class-level session storage by base_url
 
     def __init__(self, base_url=None, username=None, password=None, mfa_secret=None):
         self.base_url = base_url
@@ -48,28 +53,38 @@ class Unifi:
         self.udm_pro = ''
         self.session_cookie = None
         self.csrf_token = None
-        self.load_session_from_file()
-        self.sites = self.get_sites()
 
         if not all([self.base_url, self.username, self.password, self.mfa_secret]):
             raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")
 
+        self.load_session_from_file()
+        self.sites = self.get_sites()
+
     def save_session_to_file(self):
-        session_data = {
+        """Save session data to file, grouped by base_url."""
+        # Ensure session data for the current base_url is saved
+
+        self._session_data[self.base_url] = {
             "session_cookie": self.session_cookie,
             "csrf_token": self.csrf_token
         }
-        with open(self.SESSION_FILE, "w") as f:
-            json.dump(session_data, f)
-        logger.info("Session data saved to file.")
+        with file_lock:
+            with open(self.SESSION_FILE, "w") as f:
+                json.dump(self._session_data, f)
+            logger.info(f"Session data for {self.base_url} saved to file.")
 
     def load_session_from_file(self):
+        """Load session data from file for the current base_url."""
         if os.path.exists(self.SESSION_FILE):
             with open(self.SESSION_FILE, "r") as f:
-                session_data = json.load(f)
-                self.session_cookie = session_data.get("session_cookie")
-                self.csrf_token = session_data.get("csrf_token")
-                logger.info("Loaded session data from file.")
+                self._session_data = json.load(f)
+
+            # Load session data specific to this base_url, if it exists
+            if self.base_url in self._session_data:
+                session_info = self._session_data[self.base_url]
+                self.session_cookie = session_info.get("session_cookie")
+                self.csrf_token = session_info.get("csrf_token")
+                logger.info(f"Loaded session data for {self.base_url} from file.")
 
     def authenticate(self, retry_count=0, max_retries=3):
         """Logs in and retrieves a session cookie and CSRF token."""
@@ -125,15 +140,8 @@ class Unifi:
     def make_request(self, endpoint, method="GET", data=None, retry_count=0, max_retries=3):
         """Makes an authenticated request to the UniFi API."""
         if not self.session_cookie or not self.csrf_token:
-            print("No valid session. Authenticating...")
+            logger.info("No valid session. Authenticating...")
             self.authenticate()
-
-        try:
-            if method.upper() not in ["GET", "POST", "PUT", "DELETE"]:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-        except ValueError as e:
-            logger.error(e)
-            return None
 
         headers = {
             "X-CSRF-Token": self.csrf_token,
@@ -168,13 +176,17 @@ class Unifi:
                         logger.warning("Session expired. Re-authenticating...")
                         self.authenticate()
                         return self.make_request(endpoint, method, data, retry_count=0)
+                    elif response_data.get('meta', {}).get('msg') == 'api.err.LoginRequired':
+                        self.authenticate()
+                        return self.make_request(endpoint, method, data, retry_count=0)
                     else:
                         logger.error(f"Request failed with 401: {response_data.get('meta', {}).get('msg')}")
                         return response_data
             elif response.status_code == 400:
                 # Log API errors for debugging
-                logger.error(f"Request failed with 400: {response.text}")
-                return None  # Handle site context or other app-level issues.
+                response_data = response.json()
+                logger.error(f"Request failed with 400: {response_data.get('meta', {}).get('msg')}")
+                return response_data
 
             response.raise_for_status()
             return response.json()
@@ -205,7 +217,7 @@ class Unifi:
             raise ValueError(f'No sites found.')
         if response.get('meta', {}).get('rc') == 'ok':
             sites = response.get("data", [])
-            return {site["desc"]: Site(self, site) for site in sites}
+            return {site["desc"]: Sites(self, site) for site in sites}
         else:
             logger.error(response.get('meta', {}).get('msg'))
 

@@ -4,6 +4,7 @@ from .portconf import PortConf
 from .device import Device
 from .radiusprofile import RadiusProfile
 from .setting import Setting
+from .networkconf import NetworkConf
 logger = logging.getLogger(__name__)
 
 class Sites:
@@ -24,6 +25,7 @@ class Sites:
         self.device = Device(self.unifi, self)
         self.radius_profile = RadiusProfile(self.unifi, self)
         self.setting = Setting(self.unifi, self)
+        self.network_conf = NetworkConf(self.unifi, self)
 
     def __str__(self):
         return f"{self.__class__.__name__}: {self.desc}"

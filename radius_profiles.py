@@ -50,14 +50,14 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     :rtype: bool
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
 
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
     # get the list of items for the site
-    all_items = ui_site.radiusprofile.all()
+    all_items = ui_site.radius_profile.all()
     item_list = []
 
     for item in all_items:
@@ -73,7 +73,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
         else:
             # Fetch all item profiles
             item_list.append(item)
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {ui_site.output_dir}.')
+    logger.info(f'Saving {len(item_list)} Radius Profiles in directory {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
 
@@ -91,16 +91,16 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names: An optional list of item names to be excluded from deletion.
     :return: None
     """
-    include_names = context.get("include_names")
+    include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
     for name in include_names:
-        item_id = ui_site.radiusprofile.get_id(name=name)
+        item_id = ui_site.radius_profile.get_id(name=name)
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
-            item_to_backup = ui_site.radiusprofile.get(_id=item_id)
+            item_to_backup = ui_site.radius_profile.get(_id=item_id)
             item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.radiusprofile.delete(item_id)
+            response = ui_site.radius_profile.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -131,8 +131,8 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
@@ -142,7 +142,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_site.radiusprofile.all()
+        existing_items = ui_site.radius_profile.all()
         existing_item_names = {vlan.get("name") for vlan in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
@@ -160,16 +160,23 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
 
+            # Add in the radius server secret
+            for idx, server in enumerate(new_item.get('auth_servers', [])):
+                ip = server.get('ip')
+                if ip in RADIUS_SERVERS:
+                    # Update 'x_secret' in the current server dictionary
+                    new_item['auth_servers'][idx]['x_secret'] = RADIUS_SERVERS[ip]
+
             # Check if the item name already exists
             if item_name in existing_item_names:
-                logger.warning(f"Vlan '{item_name}' already exists on site '{site}', skipping upload.")
+                logger.warning(f"Vlan '{item_name}' already exists on site '{site_name}', skipping upload.")
                 continue
 
             # Make the request to add the item
-            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site}'")
-            response = ui_site.radiusprofile.create(new_item)
+            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
+            response = ui_site.radius_profile.create(new_item)
             if response:
-                logger.info(f"Successfully created {ENDPOINT} config '{item_name}' at site '{site}'")
+                logger.info(f"Successfully created {ENDPOINT} config '{item_name}' at site '{site_name}'")
             else:
                 logger.error(f"Failed to create {ENDPOINT} config {item_name}: {response}")
 
@@ -201,8 +208,8 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names")
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list")
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
@@ -212,7 +219,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} for site '{site_name}'")
-        existing_items = ui_site.radiusprofile.all()
+        existing_items = ui_site.radius_profile.all()
         existing_item_map = {item.get("name"): item for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {list(existing_item_map.keys())}")
     except Exception as e:
@@ -234,9 +241,9 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                 item_to_delete = existing_item_map[item_name]
                 item_id = item_to_delete.get("_id")
                 if item_id:
-                    item_to_backup = ui_site.radiusprofile.get(_id=item_id)
+                    item_to_backup = ui_site.radius_profile.get(_id=item_id)
                     item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.radiusprofile.delete(item_id)
+                    delete_response = ui_site.radius_profile.delete(item_id)
                     if not delete_response:
                         continue
                 else:
@@ -244,7 +251,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                     continue
             # Make the request to add the item config
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.radiusprofile.create(new_item)
+            response = ui_site.radius_profile.create(new_item)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -401,7 +408,7 @@ if __name__ == "__main__":
         process_fucntion = delete_item_from_site
 
     if process_fucntion:
-        context = {'process_function': process_function,
+        context = {'process_function': process_fucntion,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

@@ -50,14 +50,14 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     :rtype: bool
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
 
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
     # get the list of items for the site
-    all_items = ui_site.networkconf.all()
+    all_items = ui_site.network_conf.all()
     item_list = []
 
     for item in all_items:
@@ -73,7 +73,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
         else:
             # Fetch all item profiles
             item_list.append(item)
-    logger.info(f'Saving {len(item_list)} {obj_class.__name__} in directory {ui_site.output_dir}.')
+    logger.info(f'Saving {len(item_list)} Network Configs in directory {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
 
@@ -87,20 +87,20 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
     :param site_name: Name of the site where the items will be deleted.
     :param context: A dictionary containing configuration for the deletion process.
         - endpoint_dir: The directory of the API endpoint to be used.
-        - include_names: A list of item names to be deleted.
-        - exclude_names: An optional list of item names to be excluded from deletion.
+        - include_names_list: A list of item names to be deleted.
+        - exclude_names_list: An optional list of item names to be excluded from deletion.
     :return: None
     """
-    include_names = context.get("include_names")
+    include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
     for name in include_names:
-        item_id = ui_site.networkconf.get_id(name=name)
+        item_id = ui_site.network_conf.get_id(name=name)
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
-            item_to_backup = ui_site.networkconf.get(_id=item_id)
+            item_to_backup = ui_site.network_conf.get(_id=item_id)
             item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.networkconf.delete(item_id)
+            response = ui_site.network_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -131,8 +131,8 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names", None)
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list", None)
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
@@ -142,9 +142,9 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
-        existing_items = ui_site.networkconf.all()
-        existing_item_names = {vlan.get("name") for vlan in existing_items}
-        logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
+        existing_items = ui_site.network_conf.all()
+        existing_item_vlans = {vlan.get("vlan"): vlan.get("name") for vlan in existing_items}
+        logger.debug(f"Existing {ENDPOINT}: {existing_item_vlans}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")
         raise
@@ -159,19 +159,42 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
+            item_vlan = new_item.get("vlan")
 
-            # Check if the item name already exists
-            if item_name in existing_item_names:
-                logger.warning(f"Vlan '{item_name}' already exists on site '{site}', skipping upload.")
-                continue
+            # Check if the VLAN already exists and handle it properly
+            if item_vlan in existing_item_vlans:
+                existing_name = existing_item_vlans[item_vlan]
+
+                # Case 1: VLAN exists but names differ – log a warning
+                if existing_name != item_name:
+                    logger.warning(
+                        f"VLAN '{item_vlan}' already exists on site '{site_name}' "
+                        f"with a different name '{existing_name}'. New name: '{item_name}'."
+                    )
+                    continue
+                # Case 2: VLAN and names match – log a debug message and skip
+                elif existing_name == item_name:
+                    logger.debug(
+                        f"VLAN '{item_vlan}' with name '{item_name}' already exists "
+                        f"on site '{site_name}'. Skipping upload."
+                    )
+                    continue
 
             # Make the request to add the item
-            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site}'")
-            response = ui_site.networkconf.create(new_item)
-            if response:
-                logger.info(f"Successfully created {ENDPOINT} config '{item_name}' at site '{site}'")
-            else:
-                logger.error(f"Failed to create {ENDPOINT} config {item_name}: {response}")
+            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
+            response = ui_site.network_conf.create(new_item)
+            if response.get('rc') == 'error':
+                if response.get('msg') == 'api.err.VlanUsed':
+                    if response.get('msg') == 'api.err.VlanUsed':
+                        logger.error(
+                            f"Failed to upload {ENDPOINT} '{item_name}' to site '{site_name}' - "
+                            f"VLAN ID '{item_vlan}' is already in use."
+                        )
+                    else:
+                        logger.error(
+                            f"Unexpected error while uploading {ENDPOINT} '{item_name}' "
+                            f"to site '{site_name}': {response.get('msg')}"
+                        )
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -201,8 +224,8 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
-    include_names = context.get("include_names")
-    exclude_names = context.get("exclude_names", None)
+    include_names = context.get("include_names_list")
+    exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
     # Ensure directory exists
@@ -212,9 +235,9 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     # Fetch existing port configurations from the site
     try:
         logger.debug(f"Fetching existing {ENDPOINT} for site '{site_name}'")
-        existing_items = ui_site.networkconf.all()
-        existing_item_map = {item.get("name"): item for item in existing_items}
-        logger.debug(f"Existing {ENDPOINT}: {list(existing_item_map.keys())}")
+        existing_items = ui_site.network_conf.all()
+        existing_item_map = {vlan.get("vlan"): vlan for vlan in existing_items}  # Map VLANs to full items
+        logger.debug(f"Existing {ENDPOINT}: {existing_item_map.keys()}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} for site '{site_name}': {e}")
         raise
@@ -228,27 +251,39 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
+            item_vlan = new_item.get("vlan")
 
-            # Check if the vlan name exists and delete it using its _id
-            if item_name in existing_item_map:
-                item_to_delete = existing_item_map[item_name]
-                item_id = item_to_delete.get("_id")
-                if item_id:
-                    item_to_backup = ui_site.networkconf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.networkconf.delete(item_id)
-                    if not delete_response:
-                        continue
-                else:
-                    logger.error(f"Vlan '{item_name}' exists but its '_id' is missing. Skipping delete.")
+            if not item_name or not item_vlan:
+                logger.error(f"Invalid item in file '{file_name}': missing 'name' or 'vlan'.")
+                continue
+            # Check if the VLAN exists in the existing items
+            if item_vlan in existing_item_map:
+                existing_item = existing_item_map[item_vlan]
+                existing_name = existing_item.get("name")
+                item_id = existing_item.get("_id")  # Retrieve the _id for the update
+
+                if not item_id:
+                    logger.error(
+                        f"Existing VLAN '{item_vlan}' has no '_id'. Unable to replace this item. Skipping."
+                    )
                     continue
-            # Make the request to add the item config
-            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.networkconf.create(new_item)
-            if response:
-                logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
-            else:
-                logger.error(f"Failed to create {ENDPOINT} {item_name}: {response}")
+
+                # Log if the names differ
+                if item_name != existing_name:
+                    logger.info(
+                        f"Replacing VLAN '{item_vlan}' with new name '{item_name}', "
+                        f"replacing existing name '{existing_name}', at site '{site_name}'."
+                    )
+                item_to_backup = ui_site.network_conf.get(_id=item_id)
+                item_to_backup.backup(config.BACKUP_DIR)
+
+            # Make the request to update the item config
+                logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
+                response = ui_site.network_conf.update(new_item, item_id)
+                if response:
+                    logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
+                else:
+                    logger.error(f"Failed to create {ENDPOINT} {item_name}: {response}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except Exception as e:
@@ -402,7 +437,7 @@ if __name__ == "__main__":
         process_fucntion = delete_item_from_site
 
     if process_fucntion:
-        context = {'process_function': process_function,
+        context = {'process_function': process_fucntion,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

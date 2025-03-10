@@ -1,6 +1,12 @@
 import logging
 from icecream import ic
+import os
 from requests.exceptions import HTTPError
+from datetime import datetime, timedelta
+import json
+import threading
+
+file_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +121,8 @@ class BaseResource:
             raise ValueError(f'Name required to get the endpoint id.')
 
         response = self.all()
-        if response.get('meta', {}).get('rc') == 'ok':
-            for item in response.get('data', []):
+        if response:
+            for item in response:
                 if item.get('name') == name:
                     return item.get('_id')
         else:
@@ -155,8 +161,26 @@ class BaseResource:
             logger.info(f"Successfully created {self.endpoint} at site '{site_name}'")
             return response.get('data', {})
         else:
-            logger.error(f"Failed to create {self.endpoint}: {response}")
-        return None
+            return response.get('meta', {})
+
+    def update(self, data: dict = None, path: str = None):
+        site_name = self.site.name
+        if not data:
+            data = self.data
+        if not data:
+            raise ValueError(f'No data to create {self.endpoint}.')
+        if path:
+            url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}/{path}"
+        else:
+            url = f"{self.API_PATH}/{site_name}/{self.base_path}/{self.endpoint}/{self._id}"
+            path = None
+        response = self.unifi.make_request(url, 'PUT', data=data)
+        if response.get("meta", {}).get('rc') == 'ok':
+            logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{site_name}'")
+            return response.get('data', {})
+        else:
+            logger.error(f"Failed to update {self.endpoint} with ID {self._id}: {response}")
+            return None
 
     def delete(self, item_id: int = None):
         """
@@ -206,8 +230,8 @@ class BaseResource:
             logger.info(f"Backup directory created: {backup_dir}")
 
         # Get the site description and endpoint
-        site_desc = self.site.get("desc")
-        endpoint = self.site.get('endpoint')
+        site_desc = self.site.desc
+        endpoint = self.endpoint
         item_id = self._id
 
         # Current date and time for backup categorization
@@ -239,9 +263,10 @@ class BaseResource:
         backup_data[endpoint][timestamp][item_id] = data
 
         # Write back to the backup file
-        with open(backup_file_path, "w") as f:
-            json.dump(backup_data, f, indent=4)
-            logger.info(f"Configuration backed up for site '{site_desc}' at endpoint '{endpoint}'.")
+        with file_lock:
+            with open(backup_file_path, "w") as f:
+                json.dump(backup_data, f, indent=4)
+                logger.info(f"Configuration backed up for site '{site_desc}' at endpoint '{endpoint}'.")
 
         # Clean up old backups (older than 4 months)
         cutoff_date = now - timedelta(days=4 * 30)  # Approximate 4 months as 120 days

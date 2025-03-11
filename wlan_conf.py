@@ -357,7 +357,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
 if __name__ == "__main__":
     ENDPOINT = 'WLAN Configuration'
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
-
+    site_name_group = parser.add_mutually_exclusive_group(required=True)
     # Add the verbose flag
     parser.add_argument(
         "-v", "--verbose",
@@ -399,7 +399,16 @@ if __name__ == "__main__":
         default=[],
         help="List of names to exclude"
     )
-
+    site_name_group.add_argument(
+        "--site-name",
+        nargs=1,
+        help="Name of the site to apply the changes to."
+    )
+    site_name_group.add_argument(
+        "--site-names-file",
+        type=str,
+        help='File containing a list of site names to apply changes to.'
+    )
     # Parse the arguments
     args = parser.parse_args()
 
@@ -429,14 +438,18 @@ if __name__ == "__main__":
         valid_names = get_valid_names_from_dir(endpoint_dir)
     else:
         valid_names = []
-    site_names_path = config.SITE_NAMES
-    try:
-        with open(site_names_path, 'r') as f:
-            site_names = set(json.load(f))
-    except FileNotFoundError:
-        raise FileNotFoundError(f'The file {site_names_path} does not exist.')
-    except json.JSONDecodeError:
-        raise ValueError(f'The file {site_names_path} is not a valid JSON file.')
+
+    # Get the site name(s) to apply changes too
+    if args.site_name:
+        site_names = args.site_name
+    elif args.site_names_file:
+        ui_name_filename = args.site_names_file
+        ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
+        with open(ui_name_path, 'r') as f:
+            site_names = [line.strip() for line in f if line.strip()]
+    else:
+        logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
+        raise SystemExit(1)
 
     base_site = config.BASE_SITE
     if not base_site:

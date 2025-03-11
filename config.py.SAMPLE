@@ -18,10 +18,6 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 if len(CONTROLLERS) == 0:
     raise ValueError(f'At least one controller must be specified in config.py.')
 
-# name of the file that contains the list of site names to sync data too.
-SITE_NAMES_FILE = 'site_names.json'
-SITE_NAMES = os.path.join(INPUT_DIR, SITE_NAMES_FILE)
-
 # Threading limits
 # The scripts can process multiple controllers concurrently and for each controller it can process
 # multiple sites concurrently.

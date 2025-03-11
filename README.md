@@ -89,8 +89,6 @@ The `config.py` file contains configuration data for the controllers, base site,
    BACKUP_DIR = 'backup'
    BASE_SITE = 'Default'
    
-   SITE_NAMES = 'site_names.json'
-   
    CONTROLLERS = [
     'https://192.168.1.1:8443',
      'https://192.168.1.2:8443',
@@ -136,7 +134,7 @@ The script provides several options for syncing configuration items across UniFi
    python3 port_profiles.py --add
    ```
 
-   To specify a limited number of sites, edit the JSON file defined by `SITE_NAMES` in your `config.py`. This file includes a list of UniFi site names where the configuration will be applied.
+   To specify a limited number of sites use `--site-name` or `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
 
 ---
 

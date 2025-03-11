@@ -104,7 +104,9 @@ The `config.py` file contains configuration data for the controllers, base site,
 * Since the radius server secrets can't be copied from the base site, they need to be supplied here in a dict with the radius server IP address as the key and the secret as the value.
 ---
 ### Setup The Include Sites list
-TBD
+- Create a text file, e.g. `sites.txt` and place it in the `input` directory.
+- Add one site name per line.
+- The site name must match the Unifi descriptive name of the site.
 
 ### 4. Install Python Dependencies
 Set up a Python virtual environment and install the required dependencies:

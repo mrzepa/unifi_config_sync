@@ -137,7 +137,11 @@ The script provides several options for syncing configuration items across UniFi
    ```
 
    To specify a limited number of sites use `--site-name` or `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
-
+3. **Sync All Configs at Once**
+   If you want to apply all configuration changes at the same time:
+   ```bash
+   python3 run.py --add --site-name MySite
+   ```
 ---
 
 ### Using Include/Exclude Options

@@ -136,7 +136,7 @@ if __name__ == "__main__":
             # Retrieve the function object instead of a string.
             context_dict[context_item]['process_function'] = module.get_templates_from_base_site
 
-        site_names = {base_site}  # For the get we only worry about the base site
+        site_names = {base_site}  # For the "get" we only worry about the base site
 
     if args.add:
         logging.info(f"Option selected: Add")
@@ -226,7 +226,6 @@ if __name__ == "__main__":
         context['process_function'] = context_dict[context_item]['process_function']
         context['endpoint_dir'] = context_item
         context['endpoint'] = context_dict[context_item]['endpoint']
-
 
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:

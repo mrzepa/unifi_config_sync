@@ -14,6 +14,16 @@ filelock = threading.Lock()
 site_data_lock = threading.Lock()
 
 def build_site_data(unifi, site_name):
+    """
+    Builds and updates the site-specific configuration data by retrieving local VLANs, radius
+    profiles, user groups, and AP groups. The generated data is stored in a JSON file based on
+    the designated site name. The function writes the JSON data to a directory location and
+    ensures the directory exists before making updates.
+
+    :param unifi: An instance of the Unifi controller client that provides access to site configurations.
+    :param site_name: The name of the site from which data is retrieved and updated.
+    :return: None
+    """
     ui_site = unifi.sites[site_name]
     output_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
 
@@ -23,16 +33,15 @@ def build_site_data(unifi, site_name):
     for vlan in networks:
         if vlan.get("name") == 'Default':
             continue
-        vlans.update({vlan.get("name"): vlan.get("_id")})
+        vlans[vlan.get("name")] = vlan.get("_id")
 
     # Get all the local radius profiles
-
     radius_profiles_dict = {}
     radius_profiles = ui_site.radius_profile.all()
     for radius_profile in radius_profiles:
         if radius_profile.get("name") == 'Default':
             continue
-        radius_profiles_dict.update({radius_profile.get("name"): radius_profile.get("_id")})
+        radius_profiles_dict[radius_profile.get("name")] = radius_profile.get("_id")
 
     # Get all local user groups
     user_groups_dict = {}
@@ -40,29 +49,40 @@ def build_site_data(unifi, site_name):
     for user_group in user_groups:
         if user_group.get("name") == 'Default':
             continue
-        user_groups_dict.update({user_group.get("name"): user_group.get("_id")})
+        user_groups_dict[user_group.get("name")] = user_group.get("_id")
 
     # Get all local ap groups
     ap_groups_dict = {}
     ap_groups = ui_site.ap_groups.all()
     for ap_group in ap_groups:
-        ap_groups_dict.update({ap_group.get("name"): ap_group.get("_id")})
+        ap_groups_dict[ap_group.get("name")] = ap_group.get("_id")
 
-    # Group data by site name
-    site_data = {
-        site_name: {
-            "vlans": vlans,
-            "radius_profiles": radius_profiles_dict,
-            "user_groups": user_groups_dict,
-            "ap_groups": ap_groups_dict,
-        }
+    # New site data to be added/updated
+    new_site_data = {
+        "vlans": vlans,
+        "radius_profiles": radius_profiles_dict,
+        "user_groups": user_groups_dict,
+        "ap_groups": ap_groups_dict,
     }
 
+    # Make sure the SITE_DATA_DIR exists.
+    os.makedirs(SITE_DATA_DIR, exist_ok=True)
+
+    # Load existing data (if any) and update/add the new site info.
     with site_data_lock:
         try:
-            os.makedirs(SITE_DATA_DIR, exist_ok=True)
+            if os.path.exists(output_filename):
+                with open(output_filename, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            else:
+                existing_data = {}
+
+            # Update the data for the specific site
+            existing_data[site_name] = new_site_data
+
+            # Write combined data back to file
             with open(output_filename, 'w', encoding='utf-8') as f:
-                json.dump(site_data, f, indent=4)
+                json.dump(existing_data, f, indent=4)
         except Exception as e:
             logger.error(f'Failed to save site data to {output_filename}: {e}')
 

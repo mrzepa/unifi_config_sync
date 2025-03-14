@@ -8,18 +8,13 @@ import requests
 from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file, validate_names, get_valid_names_from_dir
-from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files
-from unifi.sites import Sites
-from unifi.networkconf import NetworkConf
-from unifi.radiusprofile import RadiusProfile
-from unifi.setting import Setting
+
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -92,7 +87,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     return True
 
 
-def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
+def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
     """
     Adds items to a specific site in the Unifi Controller by processing JSON files in a designated
     directory. Validates the existence of the target directory, reads configuration files, checks
@@ -110,6 +105,7 @@ def update_settings_at_site(unifi: Unifi, site_name: str, context: dict):
     :raises Exception: For failures in retrieving or uploading data from/to the Unifi Controller.
     """
     ui_site = unifi.sites[site_name]
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_name_list")
     vlans = {}
@@ -313,7 +309,7 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = update_settings_at_site
+        process_fucntion = replace_item_at_site
 
     elif args.delete:
         logger.warning(f'Option: Delete not allowed for {ENDPOINT}.')

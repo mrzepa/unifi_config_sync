@@ -8,18 +8,13 @@ import requests
 from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import (process_single_controller, save_dicts_to_json, read_json_file,
                  get_valid_names_from_dir, validate_names)
-from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files
-from unifi.portconf import PortConf
-from unifi.sites import Sites
-from unifi.networkconf import NetworkConf
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -54,47 +49,52 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     ui_site.output_dir = endpoint_dir
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
 
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
+
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
+
     # get the list of items for the site
     all_items = ui_site.port_conf.all()
     item_list = []
 
-    # get the list of vlans for the site
-    networks = ui_site.network_conf.all()
-    vlans = {}
-    for network in networks:
-        vlans.update({network['_id']: network['name']})
-
     for item in all_items:
-        # remove site specific entries
-        del item['site_id']
-        del item['_id']
-        # Need to keep track of the vlan names which is not part of the profile info
-        if 'native_networkconf_id' in item:
-            if item['native_networkconf_id'] and item['native_networkconf_id'] in vlans:
-                item['native_networkconf_vlan_name'] = vlans[item['native_networkconf_id']]
-            else:
-                logger.warning(f"Item native_networkconf_id is missing or invalid: {item.get('native_networkconf_id')}")
-        if 'voice_networkconf_id' in item:
-            if item['voice_networkconf_id'] and item['voice_networkconf_id'] in vlans:
-                item['voice_networkconf_vlan_name'] = vlans[item['voice_networkconf_id']]
-            else:
-                logger.warning(f"Item voice_networkconf_id is missing or invalid: {item.get('voice_networkconf_id')}")
-        if "excluded_networkconf_ids" in item:
-            valid_excluded_names = [
-                vlans[port_id] for port_id in item["excluded_networkconf_ids"] if port_id in vlans
-            ]
-            item["excluded_networkconf_vlan_names"] = valid_excluded_names
+        if not include_names or any(value in include_names for key, value in item.items()):
+            # Copy the dictionary and remove unwanted keys in the process
+            filtered_item = item.copy()  # Create a copy of the original `item` dictionary
 
-        if include_names:
-            # Only fetch items that have been requested
-            if item.get('name') in include_names:
-                item_list.append(item)
-        elif exclude_names:
-            if item.get('name') not in exclude_names:
-                continue
-        else:
-            # Fetch all item profiles
-            item_list.append(item)
+            # Remove unnecessary keys in the copy
+            filtered_item.pop('site_id', None)
+            filtered_item.pop('_id', None)
+
+            # Add native_networkconf_id name if available
+            if 'native_networkconf_id' in item:
+                native_networkconf_id = item.get('native_networkconf_id')
+                name = next((name for name, id_ in vlans.items() if id_ == native_networkconf_id), None)
+                if name:
+                    filtered_item['native_networkconf_vlan_name'] = name
+
+            # Add voice_networkconf_id name if available
+            if 'voice_networkconf_id' in item:
+                voice_networkconf_id = item.get('voice_networkconf_id')
+                name = next((name for name, id_ in vlans.items() if id_ == voice_networkconf_id),
+                            None)
+                if name:
+                    filtered_item['voice_networkconf_vlan_name'] = name
+
+            # Add excluded_networkconf_ids name if available
+            if 'excluded_networkconf_ids' in item:
+                excluded_networkconf_ids = item.get('excluded_networkconf_ids')
+                name = next((name for name, id_ in vlans.items() if id_ == excluded_networkconf_ids),
+                            None)
+                if name:
+                    filtered_item['excluded_networkconf_vlan_names'] = name
+
+            # Append the modified copy to your item_list
+            item_list.append(filtered_item)
+
     logger.info(f'Saving {len(item_list)} Port Profiles to {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
@@ -114,6 +114,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names: An optional list of item names to be excluded from deletion.
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
@@ -149,14 +150,17 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
     :raises Exception: For failures in retrieving or uploading data from/to the Unifi Controller.
     """
     endpoint_dir = context.get("endpoint_dir")
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list", None)
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
-    networks = ui_site.network_conf.all()
 
-    vlans = {}
-    for vlan in networks:
-        vlans.update({vlan.get("name"): vlan.get("_id")})
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
+
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
 
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
@@ -241,15 +245,17 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
     :return: None
     """
     endpoint_dir = context.get("endpoint_dir")
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list", None)
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
-    networks = ui_site.network_conf.all()
 
-    vlans = {}
-    for vlan in networks:
-        vlans.update({vlan.get("name"): vlan.get("_id")})
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+    with open(site_data_filename, 'r') as f:
+        all_site_data = json.load(f)
 
+    site_data = all_site_data.get(site_name)
+    vlans = site_data.get("vlans")
     # Ensure directory exists
     if not os.path.exists(endpoint_dir):
         logger.error(f"{ENDPOINT} directory '{endpoint_dir}' does not exist.")

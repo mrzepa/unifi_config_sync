@@ -8,15 +8,12 @@ import requests
 from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file
-from config import SITE_NAMES
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
-from unifi.sites import Sites
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -90,6 +87,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names_list: An optional list of item names to be excluded from deletion.
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
@@ -103,9 +101,9 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
-                logger.error(f"Failed to delete {obj_class} '{name}' from site '{site_name}': {response}")
+                logger.error(f"Failed to delete Network Config '{name}' from site '{site_name}': {response}")
         else:
-            logger.warning(f"{obj_class} '{name}' does not exist on site '{site_name}', skipping deletion.")
+            logger.warning(f"Network Config '{name}' does not exist on site '{site_name}', skipping deletion.")
 
 
 def add_item_to_site(unifi, site_name: str, context: dict):
@@ -129,6 +127,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list", None)
     exclude_names = context.get("exclude_names_list", None)
@@ -222,6 +221,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_names_list", None)
@@ -287,7 +287,9 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
 
 
 if __name__ == "__main__":
+    print(f'in network_conf.py')
     ENDPOINT = 'Network Configuration'
+
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
     site_name_group = parser.add_mutually_exclusive_group(required=True)
     # Add the verbose flag
@@ -365,7 +367,7 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'network_configs'
+    endpoint_dir = 'network_conf'
     if os.path.exists(endpoint_dir):
         valid_names = get_valid_names_from_dir(endpoint_dir)
     else:
@@ -408,17 +410,17 @@ if __name__ == "__main__":
 
         if args.include_names:
             if not validate_names(args.include_names, valid_names, 'include-names'):
-                sys.exit(1)
+                raise argparse.ArgumentError
         if args.exclude_names:
             if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                sys.exit(1)
+                raise argparse.ArgumentError
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
 
         if not args.include_names:
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
-            sys.exit(1)
+            raise argparse.ArgumentError
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -427,14 +429,14 @@ if __name__ == "__main__":
             # Log the items to be replaced
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
-            sys.exit(1)
+            raise argparse.ArgumentError
         process_fucntion = replace_item_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
         if not args.include_names:
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
-            sys.exit(1)
+            raise argparse.ArgumentError
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -442,7 +444,7 @@ if __name__ == "__main__":
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
-            sys.exit(1)
+            raise argparse.ArgumentError
         process_fucntion = delete_item_from_site
 
     if process_fucntion:

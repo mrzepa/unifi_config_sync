@@ -8,16 +8,13 @@ import requests
 from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file
-from config import SITE_NAMES, RADIUS_SERVERS
+from config import RADIUS_SERVERS
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
-from unifi.sites import Sites
-from unifi.radiusprofile import RadiusProfile
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -91,6 +88,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names: An optional list of item names to be excluded from deletion.
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
@@ -130,6 +128,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list", None)
     exclude_names = context.get("exclude_names_list", None)
@@ -207,6 +206,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_names_list", None)

@@ -81,12 +81,12 @@ def process_controller(unifi, context: dict):
     :return: Returns None if no matching sites are found or if processing completes successfully.
     :rtype: None
     """
-    site_names = context.get("site_names", [])
+    site_names_set = set(context.get("site_names", []))
     process_function = context.get("process_function")
     # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
     # site names provided.
     ui_site_names_set = set(unifi.sites.keys())
-    site_names_to_process = list(site_names.intersection(ui_site_names_set))
+    site_names_to_process = list(site_names_set.intersection(ui_site_names_set))
     logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')
     if len(site_names_to_process) == 0:
         logger.warning(f'No matching sites to process for controller {unifi.base_url}')

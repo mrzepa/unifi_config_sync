@@ -3,7 +3,7 @@
 portconf
 port_profiles
 networkconf
-network_configs
+network_conf
 radiusprofile
 radius_profiles
 logs/
@@ -15,5 +15,5 @@ input/
 backups/
 setting/
 global_settings
-wlan_configs
+wlan_conf
 site_data

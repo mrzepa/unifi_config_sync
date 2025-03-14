@@ -8,15 +8,12 @@ import requests
 from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file
-from config import SITE_NAMES, SITE_DATA_DIR, SITE_DATA_FILE
 from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
-from unifi.sites import Sites
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -54,7 +51,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
 
-    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
         all_site_data = json.load(f)
 
@@ -111,7 +108,6 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
 
             # Append the modified copy to your item_list
             item_list.append(filtered_item)
-    ic(item_list)
     logger.info(f'Saving {len(item_list)} Network Configs in directory {ui_site.output_dir}.')
     save_dicts_to_json(item_list, ui_site.output_dir)
     return True
@@ -130,6 +126,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         - exclude_names_list: An optional list of item names to be excluded from deletion.
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     include_names = context.get("include_names_list")
     ui_site = unifi.sites[site_name]
 
@@ -143,9 +140,9 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
-                logger.error(f"Failed to delete {obj_class} '{name}' from site '{site_name}': {response}")
+                logger.error(f"Failed to delete WLAN '{name}' from site '{site_name}': {response}")
         else:
-            logger.warning(f"{obj_class} '{name}' does not exist on site '{site_name}', skipping deletion.")
+            logger.warning(f"WLAN '{name}' does not exist on site '{site_name}', skipping deletion.")
 
 
 def add_item_to_site(unifi, site_name: str, context: dict):
@@ -169,12 +166,13 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list", None)
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
-    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
         all_site_data = json.load(f)
 
@@ -268,12 +266,13 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
     :type context: dict
     :return: None
     """
+    ENDPOINT = context.get("endpoint")
     endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_names_list", None)
     ui_site = unifi.sites[site_name]
 
-    site_data_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
         all_site_data = json.load(f)
 
@@ -433,7 +432,7 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'wlan_configs'
+    endpoint_dir = 'wlan_conf'
     if os.path.exists(endpoint_dir):
         valid_names = get_valid_names_from_dir(endpoint_dir)
     else:

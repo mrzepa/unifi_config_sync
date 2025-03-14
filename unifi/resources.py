@@ -101,6 +101,9 @@ class BaseResource:
         else:
             url = f"{self.api_path}/{site_name}/{self.endpoint}"
         all_items = self.unifi.make_request(url, 'GET')
+        if not all_items:
+            logger.error(f'Could not get data for {self.endpoint}.')
+            return []
         if isinstance(all_items, list):
             return all_items
         if all_items.get("meta", {}).get('rc') == 'ok':

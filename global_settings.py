@@ -15,11 +15,9 @@ import config
 import utils
 from utils import setup_logging, get_filtered_files
 
-
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 def get_templates_from_base_site(unifi, site_name: str, context: dict):
@@ -41,7 +39,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     :rtype: bool
     """
 
-    endpoint_dir = context.get("endpoint_dir")
+    endpoint_dir = os.path.splitext(os.path.basename(__file__))[0]
     include_names = context.get("include_names_list", None)
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
@@ -170,8 +168,11 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
 
 
 if __name__ == "__main__":
+    env_path = os.path.join(os.path.expanduser("~"), ".env")
+    load_dotenv()
     ENDPOINT = 'Global Settings'
     valid_keys = ['global_switch']
+
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
     site_name_group = parser.add_mutually_exclusive_group(required=True)
     # Add the verbose flag
@@ -267,10 +268,6 @@ if __name__ == "__main__":
         logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
         raise SystemExit(1)
 
-    base_site = config.BASE_SITE
-    if not base_site:
-        raise ValueError("Base site is not defined in the configuration file.")
-
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
     process_fucntion = None
@@ -284,7 +281,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
         process_fucntion = get_templates_from_base_site
-        site_names = {base_site}
+
         if validate_names(args.include_names, valid_keys, 'include-names'):
             logger.info(f'{ENDPOINT} keys to be retrieved: {args.include_names}')
             include_names_list = args.include_names

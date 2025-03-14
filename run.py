@@ -14,7 +14,10 @@ import port_profiles
 import radius_profiles
 import wlan_conf
 from utils import get_valid_names_from_dir, process_single_controller, validate_names, setup_logging
+from dotenv import load_dotenv
 
+env_path = os.path.join(os.path.expanduser("~"), ".env")
+load_dotenv()
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
 
@@ -116,16 +119,12 @@ if __name__ == "__main__":
     valid_names = []
     for endpoint_dir in context_dict:
         if os.path.exists(endpoint_dir):
-            valid_names = get_valid_names_from_dir(endpoint_dir)
+            valid_names.extend(get_valid_names_from_dir(endpoint_dir))
 
     if args.verbose:
         setup_logging(logging.DEBUG)
     else:
         setup_logging(logging.INFO)
-
-    base_site = config.BASE_SITE
-    if not base_site:
-        raise ValueError("Base site is not defined in the configuration file.")
 
     if args.get:
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
@@ -136,8 +135,6 @@ if __name__ == "__main__":
             # Retrieve the function object instead of a string.
             context_dict[context_item]['process_function'] = module.get_templates_from_base_site
 
-        site_names = {base_site}  # For the "get" we only worry about the base site
-
     if args.add:
         logging.info(f"Option selected: Add")
 
@@ -147,8 +144,10 @@ if __name__ == "__main__":
         for context_item in context_dict:
             module = module_mapping[context_item]
             # Retrieve the function object instead of a string.
-            context_dict[context_item]['process_function'] = module.add_item_to_site
-
+            if context_item == 'global_settings':
+                context_dict[context_item]['process_function'] = module.replace_item_at_site
+            else:
+                context_dict[context_item]['process_function'] = module.add_item_to_site
 
         if not valid_names:
             raise ValueError(f"Base template directories do not exist. Please run with -g/--get first")
@@ -189,7 +188,10 @@ if __name__ == "__main__":
         for context_item in context_dict:
             module = module_mapping[context_item]
             # Retrieve the function object instead of a string.
-            context_dict[context_item]['process_function'] = module.delete_item_from_site
+            if context_item == 'global_settings':
+                context_dict[context_item]['process_function'] = None
+            else:
+                context_dict[context_item]['process_function'] = module.delete_item_from_site
 
         if not args.include_names:
             logger.error(f"--delete requires a list of names to delete using --include-names.")
@@ -203,17 +205,16 @@ if __name__ == "__main__":
         else:
             raise argparse.ArgumentError
 
-    if not args.get:
-        if args.site_name:
-            site_names = args.site_name
-        elif args.site_names_file:
-            ui_name_filename = args.site_names_file
-            ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
-            with open(ui_name_path, 'r') as f:
-                site_names = [line.strip() for line in f if line.strip()]
-        else:
-            logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
-            raise SystemExit(1)
+    if args.site_name:
+        site_names = args.site_name
+    elif args.site_names_file:
+        ui_name_filename = args.site_names_file
+        ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
+        with open(ui_name_path, 'r') as f:
+            site_names = [line.strip() for line in f if line.strip()]
+    else:
+        logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
+        raise SystemExit(1)
 
     base_context = {
         'include_names_list': args.include_names,
@@ -226,6 +227,8 @@ if __name__ == "__main__":
         context['process_function'] = context_dict[context_item]['process_function']
         context['endpoint_dir'] = context_item
         context['endpoint'] = context_dict[context_item]['endpoint']
+        if context_item == 'global_settings':
+            context['include_names_list'] = ['global_switch']
 
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:

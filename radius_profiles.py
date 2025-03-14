@@ -19,7 +19,6 @@ from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, v
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 def get_templates_from_base_site(unifi, site_name: str, context: dict):
@@ -261,7 +260,10 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
         except Exception as e:
             logger.exception(f"Error processing file '{file_name}': {e}")
 
+
 if __name__ == "__main__":
+    env_path = os.path.join(os.path.expanduser("~"), ".env")
+    load_dotenv()
     ENDPOINT = 'Radius Profiles'
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
     site_name_group = parser.add_mutually_exclusive_group(required=True)
@@ -340,7 +342,7 @@ if __name__ == "__main__":
     logger.info(f'Found {len(controller_list)} controllers.')
 
     # Get the directory for storing the items
-    endpoint_dir = 'radius_profiles'
+    endpoint_dir = os.path.splitext(os.path.basename(__file__))[0]
     if os.path.exists(endpoint_dir):
         valid_names = get_valid_names_from_dir(endpoint_dir)
     else:
@@ -358,10 +360,6 @@ if __name__ == "__main__":
         logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
         raise SystemExit(1)
 
-    base_site = config.BASE_SITE
-    if not base_site:
-        raise ValueError("Base site is not defined in the configuration file.")
-
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
     process_fucntion = None
@@ -371,7 +369,6 @@ if __name__ == "__main__":
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
         process_fucntion = get_templates_from_base_site
-        site_names = {base_site}
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
 
     elif args.add:

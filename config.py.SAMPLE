@@ -1,9 +1,6 @@
 # Global configuration options
 import os
 
-# Name of the site to sync data from.
-BASE_SITE = 'Default'
-
 # List of controllers
 CONTROLLERS = [
      'https://192.168.1.1:8443',
@@ -12,8 +9,11 @@ CONTROLLERS = [
 # directories
 INPUT_DIR = 'input'
 BACKUP_DIR = 'backups'
+SITE_DATA_DIR = 'site_data'
+SITE_DATA_FILE = 'site_data.json'
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(SITE_DATA_DIR, exist_ok=True)
 
 if len(CONTROLLERS) == 0:
     raise ValueError(f'At least one controller must be specified in config.py.')

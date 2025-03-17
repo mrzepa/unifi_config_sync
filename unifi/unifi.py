@@ -110,7 +110,7 @@ class Unifi:
         try:
             response = session.post(login_endpoint, json=payload, verify=False)
             response_data = response.json()
-            response.raise_for_status()
+            # response.raise_for_status()
             if response_data.get("meta", {}).get("rc") == "ok":
                 logger.info("Logged in successfully.")
                 self.session_cookie = session.cookies.get("unifises")
@@ -133,7 +133,7 @@ class Unifi:
             return None
         except requests.exceptions.RequestException as e:
             logger.error(f"Authentication error: {e}. Retrying ({retry_count + 1}/{max_retries})...")
-            self.authenticate(retry_count=retry_count + 1)
+            return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
         except json.JSONDecodeError as json_err:
             logger.error(f"Failed to decode JSON response: {json_err}")
             return None

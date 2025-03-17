@@ -209,6 +209,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.port_conf.create(new_items)
+            logger.debug(response)
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:

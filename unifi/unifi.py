@@ -97,11 +97,11 @@ class Unifi:
         if not self.mfa_secret:
             raise ValueError("MFA_SECRET is missing or invalid.")
 
-        otp = pyotp.TOTP(self.mfa_secret).now()
+        otp = pyotp.TOTP(self.mfa_secret)
         payload = {
             "username": self.username,
             "password": self.password,
-            "ubic_2fa_token": otp,
+            "ubic_2fa_token": otp.now(),
         }
 
         session = requests.Session()

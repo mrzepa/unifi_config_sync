@@ -120,7 +120,6 @@ class Unifi:
             elif response_data.get("meta", {}).get("msg") == "api.err.Invalid2FAToken":
                 logger.warning("Invalid 2FA token detected. Waiting for the next token...")
                 # Wait for the current TOTP token to expire (~30 seconds for most TOTP systems)
-                # Adjust the timing based on your specific TOTP configuration.
                 import time
                 time_remaining = otp.interval - (int(time.time()) % otp.interval)
                 logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")

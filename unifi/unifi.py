@@ -122,7 +122,15 @@ class Unifi:
                 # Wait for the current TOTP token to expire (~30 seconds for most TOTP systems)
                 # Adjust the timing based on your specific TOTP configuration.
                 import time
-                time.sleep(30)
+                time_remaining = otp.interval - (int(time.time()) % otp.interval)
+                logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")
+                # Countdown for user clarity
+                while time_remaining > 0:
+                    print(f"\rRetrying authentication in {time_remaining} seconds...", end="")
+                    time.sleep(1)
+                    time_remaining -= 1
+                print("\nRetrying now!")
+
                 # Retry authentication with the next token
                 return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
             elif response_data.get("meta", {}).get("msg") == "api.err.Invalid":

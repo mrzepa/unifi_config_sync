@@ -125,6 +125,9 @@ class Unifi:
                 time.sleep(30)
                 # Retry authentication with the next token
                 return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
+            elif response_data.get("meta", {}).get("msg") == "api.err.Invalid":
+                logger.error(f'Login failed, invalid credentials.')
+                return None
             else:
                 logger.error(f"Login failed: {response_data.get('meta', {}).get('msg')}")
                 raise Exception("Login failed.")

@@ -87,7 +87,6 @@ The `config.py` file contains configuration data for the controllers, base site,
    ```python
    INPUT_DIR = 'input'
    BACKUP_DIR = 'backup'
-   BASE_SITE = 'Default'
    
    CONTROLLERS = [
     'https://192.168.1.1:8443',

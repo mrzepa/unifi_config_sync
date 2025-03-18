@@ -32,7 +32,7 @@ This project is designed to manage common configuration bits on UniFi network co
 ### 1. Clone the Repository
 Clone this repository to your local machine:
 ```bash
-git clone https://github.com/yourusername/unifi-profile-manager.git
+git clone https://github.com/mrzepa/unifi_config_sync.git
 cd unifi-profile-manager
 ```
 

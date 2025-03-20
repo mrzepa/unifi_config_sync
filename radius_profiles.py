@@ -266,7 +266,7 @@ if __name__ == "__main__":
     load_dotenv()
     ENDPOINT = 'Radius Profiles'
     parser = argparse.ArgumentParser(description=f"{ENDPOINT} Management Script")
-    site_name_group = parser.add_mutually_exclusive_group(required=True)
+
     # Add the verbose flag
     parser.add_argument(
         "-v", "--verbose",
@@ -308,15 +308,18 @@ if __name__ == "__main__":
         default=[],
         help="List of names to exclude"
     )
-    site_name_group.add_argument(
-        "--site-name",
-        nargs=1,
-        help="Name of the site to apply the changes to."
-    )
-    site_name_group.add_argument(
+
+    parser.add_argument(
         "--site-names-file",
         type=str,
+        default='sites.txt',
         help='File containing a list of site names to apply changes to.'
+    )
+    parser.add_argument(
+        "--base-site-name",
+        type=str,
+        default='Default',
+        help='Name of the base site to get configuraitons from.'
     )
     # Parse the arguments
     args = parser.parse_args()
@@ -334,7 +337,7 @@ if __name__ == "__main__":
         ui_mfa_secret = os.getenv("UI_MFA_SECRET")
 
     except KeyError as e:
-        logger.exception("Unifi username or password is missing from environment variables.")
+        logger.critical("Unifi username or password is missing from environment variables.")
         raise SystemExit(1)
 
     # get the list of controllers
@@ -349,16 +352,10 @@ if __name__ == "__main__":
         valid_names = []
 
     # Get the site name(s) to apply changes too
-    if args.site_name:
-        site_names = args.site_name
-    elif args.site_names_file:
-        ui_name_filename = args.site_names_file
-        ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
-        with open(ui_name_path, 'r') as f:
-            site_names = [line.strip() for line in f if line.strip()]
-    else:
-        logger.error('Missing site name. Please use --site-name [site_name] or --site-names-file [filename.txt].')
-        raise SystemExit(1)
+    ui_name_filename = args.site_names_file
+    ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
+    with open(ui_name_path, 'r') as f:
+        site_names = [line.strip() for line in f if line.strip()]
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
@@ -370,6 +367,7 @@ if __name__ == "__main__":
         logging.info(f"Option selected: Get {ENDPOINT}")
         process_fucntion = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
+        site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")

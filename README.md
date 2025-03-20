@@ -23,7 +23,6 @@ This project is designed to manage common configuration bits on UniFi network co
   - `requests`
   - `pyyaml`
   - `pyotp`
-  - Other standard libraries included with Python.
 
 ---
 
@@ -62,7 +61,7 @@ The OTP seed (also referred to as the MFA Secret) is required for Multi-Factor A
 
 If you do not have 2FA enabled, you will need to set it up to generate a new OTP seed.
 
-Create a `.env` file in the root directory of the project to include your UniFi credentials and other configuration options.
+Create a `.env` file in the root directory of the project or your home directory to include your UniFi credentials and other configuration options.
 
 Example `.env` file:
 ```plaintext
@@ -90,7 +89,7 @@ The `config.py` file contains configuration data for the controllers, base site,
    
    CONTROLLERS = [
     'https://192.168.1.1:8443',
-     'https://192.168.1.2:8443',
+    'https://192.168.1.2:8443',
    ]
 
    MAX_THREADS = 8
@@ -117,15 +116,24 @@ pip install -r requirements.txt    # Install dependencies
 
 ---
 
-## Running the Script
+## Running the Script(s)
 The script provides several options for syncing configuration items across UniFi sites. These include fetching configuration items like port profiles from the base site and applying them to other sites, while also allowing for explicit control over which items to include or exclude.
+
+### Script Descriptions
+- global_settings.py: This is for syncing Global Settings for the site, at the moment, this only includes the Global Switch settings.
+- network_conf.py: this is for syncing the VLANs for the site.
+- port_profiles.py: This is for syncing the Port Porfiles for the site.
+- radius_profiles.py: This is for syncing the Radius Profiles for the site.
+- wlan_conf.py: This is for syncing the WLANs for the site.
+- run.py: This will execute all the above scripts.
 
 ### General Workflow:
 
 1. **Fetch Items from the Base Site**  
-   Retrieve the port profiles or other configuration items from the site designated as the base site:
+   Retrieve the port profiles or other configuration items from the site designated as the base site (aka template site):
    ```bash
-   python3 port_profiles.py --get
+   python3 port_profiles.py --get --base-site-name Default
+   
    ```
    Alternatively, if you already have the configuration items in a JSON format, you can directly place them into the directory specified by `endpoint_dir` in the script.
 
@@ -139,7 +147,7 @@ The script provides several options for syncing configuration items across UniFi
 3. **Sync All Configs at Once**
    If you want to apply all configuration changes at the same time:
    ```bash
-   python3 run.py --add --site-name MySite
+   python3 run.py --add
    ```
 ---
 
@@ -210,18 +218,16 @@ By following these examples and guidelines, you can confidently manage UniFi con
 ## Troubleshooting
 
 ### Common Issues:
-1. **"Profile directory does not exist":**
-   Ensure the directory specified in `PROFILE_DIR` exists and contains valid JSON files.
 
-2. **Authentication Issues:**
+1. **Authentication Issues:**
    Verify your UniFi credentials and ensure the `.env` file is set correctly.
 
-3. **Duplicate Profile Names:**
+2. **Duplicate Profile Names:**
    The script automatically avoids uploading profiles with names that already exist on the specified site.
 
-4. **UniFi API Errors:**
+3. **UniFi API Errors:**
    Check the logs (`ERROR` messages) for details such as `400` or invalid payload issues.
-5. **Enable Debug Logging:**
+4. **Enable Debug Logging:**
     ```bash
    python3 main.py -v --add
    ```

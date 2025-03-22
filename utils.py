@@ -26,7 +26,7 @@ def build_site_data(unifi, site_name):
     """
     ui_site = unifi.sites[site_name]
     output_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
-
+    logger.debug(f'Saving site info for {site_name} to {output_filename}...')
     # Get all the local vlans
     vlans = {}
     networks = ui_site.network_conf.all()
@@ -91,7 +91,7 @@ def process_controller(unifi, context: dict):
     This function processes sites related to a given controller. It checks for matching site names between the
     provided context and the controller's available sites. For each matching site, the function executes a
     dynamically passed processing function in a multi-threaded manner using a ThreadPoolExecutor. Logging is
-    done for debugging and issue identification.
+    done for debugging and issue identification. If no site is passed, then all sites on the controller are processed.
 
     :param unifi: Represents the controller object that contains available site details and functionalities.
     :type unifi: object
@@ -102,15 +102,19 @@ def process_controller(unifi, context: dict):
     :rtype: None
     """
     site_names_set = set(context.get("site_names", []))
+    if site_names_set:
+        # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
+        # site names provided.
+        ui_site_names_set = set(unifi.sites.keys())
+        site_names_to_process = list(site_names_set.intersection(ui_site_names_set))
+        logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')
+        if len(site_names_to_process) == 0:
+            logger.warning(f'No matching sites to process for controller {unifi.base_url}')
+            return None
+    else:
+        site_names_to_process = list(unifi.sites.keys())
+
     process_function = context.get("process_function")
-    # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
-    # site names provided.
-    ui_site_names_set = set(unifi.sites.keys())
-    site_names_to_process = list(site_names_set.intersection(ui_site_names_set))
-    logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')
-    if len(site_names_to_process) == 0:
-        logger.warning(f'No matching sites to process for controller {unifi.base_url}')
-        return None
 
     with ThreadPoolExecutor(max_workers=MAX_SITE_THREADS) as executor:
         futures = []

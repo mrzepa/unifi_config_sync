@@ -205,20 +205,24 @@ class Unifi:
             logger.error(f"An error occurred: {e}")
             return None
 
-    def get_sites(self):
+    def get_sites(self) -> dict:
         """
-        Fetches a list of site names from the Unifi controller and saves them to a JSON file.
+        Fetches the list of sites from the Unifi controller.
 
-        This method communicates with the Unifi controller through an API endpoint
-        to retrieve a list of site names. The retrieved site names are then written
-        to a JSON file specified by the output parameter.
+        This method sends a GET request to the "/api/self/sites" endpoint of the
+        Unifi controller to retrieve a list of available sites. The method returns
+        a dictionary where the keys are the site descriptions and the values are
+        `Sites` objects initialized with the retrieved data.
 
-        :param output: The name of the output JSON file where the site names will be saved.
-                       Defaults to 'site_names.json'.
-        :type output: str
-        :return: A list of site names retrieved from the Unifi controller.
-        :rtype: list[str]
-        :raises ValueError: If no sites are found during the API request.
+        :raises ValueError: When no sites are found in the response or an invalid
+            response is received from the controller.
+        :raises KeyError: When the expected data or metadata is missing in the
+            response.
+        :raises Exception: If the request to the controller fails or another
+            unexpected condition occurs.
+
+        :return: A dictionary mapping site descriptions to `Sites` objects.
+        :rtype: dict
         """
 
         logger.debug(f'Fetching sites from Unifi controller.')

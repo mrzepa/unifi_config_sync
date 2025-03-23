@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from unifi.unifi import Unifi
-from config import MAX_SITE_THREADS, SITE_DATA_DIR, SITE_DATA_FILE
+import config
+
 import logging
 import json
 import os
@@ -13,26 +14,37 @@ logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 site_data_lock = threading.Lock()
 
-def build_site_data(unifi, site_name):
+def build_site_data(unifi, site_name: str, output_filename: str, make_template: bool = False,):
     """
-    Builds and updates the site-specific configuration data by retrieving local VLANs, radius
-    profiles, user groups, and AP groups. The generated data is stored in a JSON file based on
-    the designated site name. The function writes the JSON data to a directory location and
-    ensures the directory exists before making updates.
+    Builds and saves site-specific data including VLANs, radius profiles, user groups,
+    and access point groups for the given UniFi site. The resulting data is either stored
+    in a specific file or used as a template based on the `make_template` flag.
 
-    :param unifi: An instance of the Unifi controller client that provides access to site configurations.
-    :param site_name: The name of the site from which data is retrieved and updated.
+    This function interacts with the UniFi site configuration to gather relevant
+    information and stores or updates it in a JSON file. If the file already exists
+    and the `make_template` flag is not set, the site-specific data is updated;
+    otherwise, a new template or data structure is created for the specified site.
+
+    :param unifi: UniFi instance that provides access to site configurations.
+    :type unifi: UniFiController
+    :param site_name: Name of the UniFi site to process.
+    :type site_name: str
+    :param output_filename: Path to the output JSON file for saving site data.
+    :type output_filename: str
+    :param make_template: If set to True, creates a new site data template
+        without reading or updating existing data.
+    :type make_template: bool
     :return: None
+    :rtype: None
+    :raises Exception: If there is an issue with loading or saving the site data.
     """
     ui_site = unifi.sites[site_name]
-    output_filename = os.path.join(SITE_DATA_DIR, SITE_DATA_FILE)
+
     logger.debug(f'Saving site info for {site_name} to {output_filename}...')
     # Get all the local vlans
     vlans = {}
     networks = ui_site.network_conf.all()
     for vlan in networks:
-        if vlan.get("name") == 'Default':
-            continue
         vlans[vlan.get("name")] = vlan.get("_id")
 
     # Get all the local radius profiles
@@ -66,23 +78,25 @@ def build_site_data(unifi, site_name):
     }
 
     # Make sure the SITE_DATA_DIR exists.
-    os.makedirs(SITE_DATA_DIR, exist_ok=True)
+    os.makedirs(config.SITE_DATA_DIR, exist_ok=True)
 
     # Load existing data (if any) and update/add the new site info.
     with site_data_lock:
         try:
-            if os.path.exists(output_filename):
-                with open(output_filename, 'r', encoding='utf-8') as f:
-                    existing_data = json.load(f)
+            if not make_template:
+                if os.path.exists(output_filename):
+                    with open(output_filename, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                else:
+                    data = {}
+
+                # Update the data for the specific site
+                data[site_name] = new_site_data
             else:
-                existing_data = {}
-
-            # Update the data for the specific site
-            existing_data[site_name] = new_site_data
-
+                data = new_site_data
             # Write combined data back to file
             with open(output_filename, 'w', encoding='utf-8') as f:
-                json.dump(existing_data, f, indent=4)
+                json.dump(data, f, indent=4)
         except Exception as e:
             logger.error(f'Failed to save site data to {output_filename}: {e}')
 
@@ -116,20 +130,25 @@ def process_controller(unifi, context: dict):
 
     process_function = context.get("process_function")
 
-    with ThreadPoolExecutor(max_workers=MAX_SITE_THREADS) as executor:
-        futures = []
-        for site_names in site_names_to_process:
-            futures.append(executor.submit(build_site_data, unifi, site_names))
+    if process_function.__name__ == 'get_templates_from_base_site':
+        output_filename = os.path.join(config.SITE_DATA_DIR, config.BASE_SITE_DATA_FILE)
+        build_site_data(unifi, site_names_to_process[0], output_filename, make_template=True)
+    else:
+        output_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+        with ThreadPoolExecutor(max_workers=config.MAX_SITE_THREADS) as executor:
+            futures = []
+            for site_names in site_names_to_process:
+                futures.append(executor.submit(build_site_data, unifi, site_names, output_filename, make_template=False))
 
-        # Wait for all site-processing threads to complete
-        for future in as_completed(futures):
-            try:
-                future.result()  # Block until a thread completes
-            except Exception as e:
-                logger.exception(f"Error in process controller: {e}")
+            # Wait for all site-processing threads to complete
+            for future in as_completed(futures):
+                try:
+                    future.result()  # Block until a thread completes
+                except Exception as e:
+                    logger.exception(f"Error in process controller: {e}")
 
     # Process sites using ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=MAX_SITE_THREADS) as executor:
+    with ThreadPoolExecutor(max_workers=config.MAX_SITE_THREADS) as executor:
         futures = []
         for site_name in site_names_to_process:
             # Pass the dynamic function

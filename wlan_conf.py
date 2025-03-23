@@ -52,9 +52,8 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
 
     site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
-        all_site_data = json.load(f)
+        site_data = json.load(f)
 
-    site_data = all_site_data.get(site_name)
     vlans = site_data.get("vlans")
     radius_profiles = site_data.get("radius_profiles")
     user_groups = site_data.get("user_groups")

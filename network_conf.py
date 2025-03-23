@@ -13,7 +13,7 @@ from utils import process_single_controller, save_dicts_to_json, read_json_file
 from unifi.unifi import Unifi
 import config
 import utils
-from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
+from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names, build_site_data
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -141,6 +141,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
         existing_items = ui_site.network_conf.all()
         existing_item_vlans = {vlan.get("vlan"): vlan.get("name") for vlan in existing_items}
+        existing_item_map = {vlan.get("vlan"): vlan for vlan in existing_items}  # Map VLANs to full items
         logger.debug(f"Existing {ENDPOINT}: {existing_item_vlans}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")
@@ -148,6 +149,11 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
     # Get files to process from the directory
     files = get_filtered_files(endpoint_dir, include_names, exclude_names)
+
+    if os.path.exists(os.path.join(config.INPUT_DIR, config.NAME_MAP_FILE)):
+        name_map = read_json_file(os.path.join(config.INPUT_DIR, config.NAME_MAP_FILE))
+    else:
+        name_map = {}
 
     # Process selected files
     for file_path in files:
@@ -164,11 +170,34 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
                 # Case 1: VLAN exists but names differ – log a warning
                 if existing_name != item_name:
-                    logger.warning(
-                        f"VLAN '{item_vlan}' already exists on site '{site_name}' "
-                        f"with a different name '{existing_name}'. New name: '{item_name}'."
-                    )
-                    continue
+                    if existing_name.lower() == item_name.lower():
+                        logger.info(f'Vlan {existing_name} exists but case is different. Using new name: {item_name}.')
+                        existing_item = existing_item_map[item_vlan]
+                        item_id = existing_item.get("_id")  # Retrieve the _id for the update
+
+                        if not item_id:
+                            logger.error(
+                                f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
+                            )
+                            continue
+                        response = ui_site.network_conf.update(new_item, item_id)
+                    elif existing_name in name_map:
+                        logger.info(f'Vlan {existing_name} exists but has a different name. Using new name: {item_name}.')
+                        existing_item = existing_item_map[item_vlan]
+                        item_id = existing_item.get("_id")  # Retrieve the _id for the update
+
+                        if not item_id:
+                            logger.error(
+                                f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
+                            )
+                            continue
+                        response = ui_site.network_conf.update(new_item, item_id)
+                    else:
+                        logger.warning(
+                            f"VLAN '{item_vlan}' already exists on site '{site_name}' "
+                            f"with a different name '{existing_name}'. New name: '{item_name}'."
+                        )
+                        continue
                 # Case 2: VLAN and names match – log a debug message and skip
                 elif existing_name == item_name:
                     logger.debug(
@@ -180,18 +209,6 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.network_conf.create(new_item)
-            if response.get('rc') == 'error':
-                if response.get('msg') == 'api.err.VlanUsed':
-                    if response.get('msg') == 'api.err.VlanUsed':
-                        logger.error(
-                            f"Failed to upload {ENDPOINT} '{item_name}' to site '{site_name}' - "
-                            f"VLAN ID '{item_vlan}' is already in use."
-                        )
-                    else:
-                        logger.error(
-                            f"Unexpected error while uploading {ENDPOINT} '{item_name}' "
-                            f"to site '{site_name}': {response.get('msg')}"
-                        )
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

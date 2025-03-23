@@ -17,3 +17,4 @@ setting/
 global_settings
 wlan_conf
 site_data
+vlan_comparison.csv

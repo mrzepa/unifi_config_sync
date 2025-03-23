@@ -172,7 +172,7 @@ class BaseResource:
             url = f"{self.api_path}/{site_name}/{self.endpoint}"
         response = self.unifi.make_request(url, 'POST', data=data)
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully created {self.endpoint} at site '{site_name}'")
+            logger.info(f"Successfully created {self.endpoint} at site '{self.site.desc}'")
             return response.get('data', {})
         else:
             return response.get('meta', {})
@@ -196,7 +196,7 @@ class BaseResource:
             path = None
         response = self.unifi.make_request(url, 'PUT', data=data)
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{site_name}'")
+            logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{self.site.desc}'")
             return response.get('data', {})
         else:
             logger.error(f"Failed to update {self.endpoint} with ID {self._id}: {response}")

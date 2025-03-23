@@ -48,13 +48,11 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     ui_site.output_dir = endpoint_dir
     logger.debug(f'Searching for base site {site_name} on controller {unifi.base_url}')
 
-    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.BASE_SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
-        all_site_data = json.load(f)
+        site_data = json.load(f)
 
-    site_data = all_site_data.get(site_name)
     vlans = site_data.get("vlans")
-
     # get the list of items for the site
     all_items = ui_site.port_conf.all()
     item_list = []
@@ -85,11 +83,12 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
 
             # Add excluded_networkconf_ids name if available
             if 'excluded_networkconf_ids' in item:
+                logger.debug(f'Found exluded_networkconf_ids in {item.get("name")}: {item.get("excluded_networkconf_ids")}')
                 excluded_networkconf_ids = item.get('excluded_networkconf_ids')
-                name = next((name for name, id_ in vlans.items() if id_ == excluded_networkconf_ids),
-                            None)
-                if name:
-                    filtered_item['excluded_networkconf_vlan_names'] = name
+                for name, id_ in vlans.items():
+                    if id_ in excluded_networkconf_ids:
+                        logger.debug(f'Found excluded_networkconf_ids in {item.get("name")}: {name}')
+                        filtered_item.setdefault('excluded_networkconf_vlan_names', []).append(name)
 
             # Append the modified copy to your item_list
             item_list.append(filtered_item)
@@ -209,16 +208,14 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.port_conf.create(new_items)
-            logger.debug(response)
-            if response:
-                logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
-            else:
-                logger.error(f"Failed to create {ENDPOINT} {item_name}: {response}")
-
+            if isinstance(response, dict):
+                if response.get('rc') == 'error':
+                    if response.get('msg') == 'api.err.InvalidExcludedNetworkConf':
+                        logger.error('Invalid Exlcude Network Conf in profile.')
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
         except KeyError as e:
-            logger.exception(f"Missing required key in file '{file_name}': {e}")
+            logger.error(f"Missing required key in file '{file_name}': {e}")
         except Exception as e:
             logger.exception(f"Error processing file '{file_name}': {e}")
 

@@ -167,16 +167,17 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
             # Check if the item name already exists
             if item_name in existing_item_names:
-                logger.warning(f"Vlan '{item_name}' already exists on site '{site_name}', skipping upload.")
-                continue
+                logger.info(f'Radius profile {item_name} already exists at site. Replacing the configuraiton.')
+                item_to_delete = existing_item_map[item_name]
+                item_id = item_to_delete.get("_id")
+                if item_id:
+                    item_to_backup = ui_site.radius_profile.get(_id=item_id)
+                    item_to_backup.backup(config.BACKUP_DIR)
+                    delete_response = ui_site.radius_profile.delete(item_id)
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.radius_profile.create(new_item)
-            if response:
-                logger.info(f"Successfully created {ENDPOINT} config '{item_name}' at site '{site_name}'")
-            else:
-                logger.error(f"Failed to create {ENDPOINT} config {item_name}: {response}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

@@ -150,11 +150,6 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     # Get files to process from the directory
     files = get_filtered_files(endpoint_dir, include_names, exclude_names)
 
-    if os.path.exists(os.path.join(config.INPUT_DIR, config.NAME_MAP_FILE)):
-        name_map = read_json_file(os.path.join(config.INPUT_DIR, config.NAME_MAP_FILE))
-    else:
-        name_map = {}
-
     # Process selected files
     for file_path in files:
         file_name = os.path.basename(file_path)
@@ -170,34 +165,21 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
                 # Case 1: VLAN exists but names differ – log a warning
                 if existing_name != item_name:
-                    if existing_name.lower() == item_name.lower():
-                        logger.info(f'Vlan {existing_name} exists but case is different. Using new name: {item_name}.')
-                        existing_item = existing_item_map[item_vlan]
-                        item_id = existing_item.get("_id")  # Retrieve the _id for the update
+                    logger.info(f'Vlan {existing_name} exists but has a different name. Using new name: {item_name}.')
+                    existing_item = existing_item_map[item_vlan]
+                    item_id = existing_item.get("_id")  # Retrieve the _id for the update
 
-                        if not item_id:
-                            logger.error(
-                                f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
-                            )
-                            continue
-                        response = ui_site.network_conf.update(new_item, item_id)
-                    elif existing_name in name_map:
-                        logger.info(f'Vlan {existing_name} exists but has a different name. Using new name: {item_name}.')
-                        existing_item = existing_item_map[item_vlan]
-                        item_id = existing_item.get("_id")  # Retrieve the _id for the update
+                    # backup the item before making changes to it.
+                    item_to_backup = ui_site.network_conf.get(_id=item_id)
+                    item_to_backup.backup(config.BACKUP_DIR)
 
-                        if not item_id:
-                            logger.error(
-                                f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
-                            )
-                            continue
-                        response = ui_site.network_conf.update(new_item, item_id)
-                    else:
-                        logger.warning(
-                            f"VLAN '{item_vlan}' already exists on site '{site_name}' "
-                            f"with a different name '{existing_name}'. New name: '{item_name}'."
+                    if not item_id:
+                        logger.error(
+                            f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
                         )
                         continue
+                    response = ui_site.network_conf.update(new_item, item_id)
+
                 # Case 2: VLAN and names match – log a debug message and skip
                 elif existing_name == item_name:
                     logger.debug(
@@ -205,10 +187,10 @@ def add_item_to_site(unifi, site_name: str, context: dict):
                         f"on site '{site_name}'. Skipping upload."
                     )
                     continue
-
-            # Make the request to add the item
-            logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.network_conf.create(new_item)
+            else:
+                # Make the request to add the item
+                logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
+                response = ui_site.network_conf.create(new_item)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

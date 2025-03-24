@@ -204,9 +204,21 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
+            # Check if the VLAN exists in the existing items
             if item_name in existing_item_names:
-                logger.debug(f'WLAN {item_name} already exists at site {site_name}, skipping upload.')
-                continue
+                logger.info(f'WLAN name {item_name} already exists. Replacing it with new configuration.')
+                existing_item = existing_item_map[item_name]
+                item_id = existing_item.get("_id")  # Retrieve the _id for the update
+
+                if not item_id:
+                    logger.error(
+                        f"Existing item '{item_name}' has no '_id'. Unable to replace this item. Skipping."
+                    )
+                    continue
+
+                item_to_backup = ui_site.wlan_conf.get(_id=item_id)
+                item_to_backup.backup(config.BACKUP_DIR)
+                ui_site.wlan_conf.delete(item_id)
 
             # Add vlans ID if the corresponding name exists
             vlan_name = new_item.get("networkconf_id_name")

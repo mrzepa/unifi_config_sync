@@ -169,6 +169,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
         existing_items = ui_site.port_conf.all()
         existing_item_names = {item.get("name") for item in existing_items}
+        existing_item_map = {item.get("name"): item for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")
@@ -185,10 +186,20 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
             new_items = read_json_file(file_path)
             item_name = new_items.get("name")
 
-            # Check if the item name already exists
-            if item_name in existing_item_names:
-                logger.warning(f"{ENDPOINT} '{item_name}' already exists on site '{site_name}', skipping upload.")
-                continue
+            # Check if the item name exists and delete it using its _id
+            if item_name in existing_item_map:
+                logger.info(f'Port profile with {item_name} already exists. Replacing it with new one.')
+                item_to_delete = existing_item_map[item_name]
+                item_id = item_to_delete.get("_id")
+                if item_id:
+                    item_to_backup = ui_site.port_conf.get(_id=item_id)
+                    item_to_backup.backup(config.BACKUP_DIR)
+                    delete_response = ui_site.port_conf.delete(item_id)
+                    if not delete_response:
+                        continue
+                else:
+                    logger.error(f"{ENDPOINT} '{item_name}' exists but its '_id' is missing. Skipping Port Profile {item_name}.")
+                    continue
 
             # modify the item for site specific vlan IDs
             for key, value in new_items.items():

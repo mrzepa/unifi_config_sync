@@ -50,7 +50,7 @@ def get_templates_from_base_site(unifi, site_name: str, context: dict):
     ui_site = unifi.sites[site_name]
     ui_site.output_dir = endpoint_dir
 
-    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
+    site_data_filename = os.path.join(config.SITE_DATA_DIR, config.BASE_SITE_DATA_FILE)
     with open(site_data_filename, 'r') as f:
         site_data = json.load(f)
 

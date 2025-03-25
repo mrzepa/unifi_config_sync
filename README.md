@@ -143,12 +143,19 @@ The script provides several options for syncing configuration items across UniFi
    python3 port_profiles.py --add
    ```
 
-   To specify a limited number of sites use `--site-name` or `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
+   To specify a limited number of sites use `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
 3. **Sync All Configs at Once**
    If you want to apply all configuration changes at the same time:
    ```bash
    python3 run.py --add
    ```
+4. **To backup the device port configuration**
+   ```bash
+   python3 backup_ports.py
+   ```
+   Note, the backup will run automatically as part of the `run.py` script before any changes are made.
+
+   To specify a limited number of sites use `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
 ---
 
 ### Using Include/Exclude Options

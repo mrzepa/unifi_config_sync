@@ -6,7 +6,6 @@ import logging
 import json
 import os
 import threading
-from unifi.sites import Sites
 from datetime import datetime, timedelta
 from icecream import ic
 
@@ -137,8 +136,8 @@ def process_controller(unifi, context: dict):
         output_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
         with ThreadPoolExecutor(max_workers=config.MAX_SITE_THREADS) as executor:
             futures = []
-            for site_names in site_names_to_process:
-                futures.append(executor.submit(build_site_data, unifi, site_names, output_filename, make_template=False))
+            for site_name in site_names_to_process:
+                futures.append(executor.submit(build_site_data, unifi, site_name, output_filename, make_template=False))
 
             # Wait for all site-processing threads to complete
             for future in as_completed(futures):
@@ -346,3 +345,5 @@ def validate_names(provided_names: list, valid_names: list, include_exclude: str
             logger.error(f"Invalid name encountered in --{include_exclude}: {invalid_name}")
         return False
     return True
+
+

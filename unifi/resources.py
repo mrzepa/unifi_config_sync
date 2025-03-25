@@ -235,7 +235,7 @@ class BaseResource:
 
     def backup(self, backup_dir: str):
         """
-        Backup the configuration of the given resource before deleting it and clean up older backups.
+        Backup the configuration of the given resource and clean up older backups.
 
         Each backup file is named after `Site.desc` and stores the configuration in the following structure:
         - object.endpoint:

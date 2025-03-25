@@ -15,6 +15,7 @@ import radius_profiles
 import wlan_conf
 from utils import get_valid_names_from_dir, process_single_controller, validate_names, setup_logging
 from dotenv import load_dotenv
+from backup_ports import backup_single_controller
 
 env_path = os.path.join(os.path.expanduser("~"), ".env")
 load_dotenv()
@@ -223,6 +224,26 @@ if __name__ == "__main__":
         'exclude_name_list': args.exclude_names,
         'site_names': site_names,
     }
+
+    # backup unifi switch ports
+    # Use concurrent.futures to handle multithreading
+    with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:
+        # Submit each controller to the thread pool for processing
+        future_to_controller = {executor.submit(backup_single_controller, controller,
+                                                base_context,
+                                                ui_username,
+                                                ui_password,
+                                                ui_mfa_secret): controller for controller in
+                                controller_list}
+
+        # Wait for all controller-processing threads to complete
+        for future in as_completed(future_to_controller):
+            try:
+                future.result()
+            except Exception as e:
+                # Handle exceptions for individual tasks
+                logger.error(e)
+                continue
 
     for context_item in context_dict:
         context = copy.copy(base_context)

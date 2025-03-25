@@ -142,6 +142,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
         logger.debug(f"Fetching existing {ENDPOINT} from site '{site_name}'")
         existing_items = ui_site.radius_profile.all()
         existing_item_names = {vlan.get("name") for vlan in existing_items}
+        existing_item_map = {item.get("name"): item for item in existing_items}
         logger.debug(f"Existing {ENDPOINT}: {existing_item_names}")
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} from site '{site_name}': {e}")

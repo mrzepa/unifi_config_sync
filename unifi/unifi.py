@@ -113,8 +113,9 @@ class Unifi:
             # response.raise_for_status()
             if response_data.get("meta", {}).get("rc") == "ok":
                 logger.info("Logged in successfully.")
+
                 self.session_cookie = session.cookies.get("unifises")
-                self.csrf_token = session.cookies.get("csrf_token")
+                # self.csrf_token = session.cookies.get("csrf_token")
                 self.save_session_to_file()
                 return
             elif response_data.get("meta", {}).get("msg") == "api.err.Invalid2FAToken":
@@ -150,12 +151,13 @@ class Unifi:
 
     def make_request(self, endpoint, method="GET", data=None, retry_count=0, max_retries=3):
         """Makes an authenticated request to the UniFi API."""
-        if not self.session_cookie or not self.csrf_token:
+        # if not self.session_cookie or not self.csrf_token:
+        if not self.session_cookie:
             logger.info("No valid session. Authenticating...")
             self.authenticate()
 
         headers = {
-            "X-CSRF-Token": self.csrf_token,
+            # "X-CSRF-Token": self.csrf_token,
             "Content-Type": "application/json"
         }
         cookies = {

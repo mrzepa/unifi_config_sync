@@ -13,6 +13,54 @@ logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 site_data_lock = threading.Lock()
 
+def vlan_check(unifi, site_name: str):
+    """
+    Validates that all required VLANs exist for the specified site. Compares the
+    current VLAN configuration of the given site with a predefined baseline to
+    identify any missing or extra VLANs.
+
+    The function reads the baseline VLANs from a JSON file located in the directory
+    specified within the configuration. It then compares them with the VLANs
+    defined in the given site's configuration and logs the discrepancies.
+
+    :param unifi: The Unifi instance providing access to site configurations.
+    :type unifi: object
+    :param site_name: The name of the site to validate VLANs for.
+    :type site_name: str
+    :return: Returns True if all required VLANs exist, otherwise False.
+    :rtype: bool
+    """
+    logger.info(f'Validating that all required VLANs exist for {site_name}... ')
+
+    ui_site = unifi.sites[site_name]
+    # Get all the local vlans
+    vlans = {}
+    networks = ui_site.network_conf.all()
+    for vlan in networks:
+        vlans[vlan.get("name")] = vlan.get("_id")
+
+    # Compare the local vlans to the baseline vlans
+    baseline_filename = os.path.join(config.SITE_DATA_DIR, config.BASE_SITE_DATA_FILE)
+    with open(baseline_filename, 'r', encoding='utf-8') as f:
+        baseline_data = json.load(f)
+        baseline_vlans = baseline_data.get("vlans", {})
+
+    # Get the sets of VLAN names from both dictionaries
+    existing_vlan_names = set(vlans.keys())
+    baseline_vlan_names = set(baseline_vlans.keys())
+
+    # Find missing and extra VLANs
+    missing_vlans = baseline_vlan_names - existing_vlan_names
+    extra_vlans = existing_vlan_names - baseline_vlan_names
+
+    if missing_vlans:
+        logger.error(f"Missing VLANs in {site_name}: {', '.join(sorted(missing_vlans))}")
+    if extra_vlans:
+        logger.info(f"Extra VLANs in {site_name}: {', '.join(sorted(extra_vlans))}")
+
+    return len(missing_vlans) == 0
+
+
 def build_site_data(unifi, site_name: str, output_filename: str, make_template: bool = False,):
     """
     Builds and saves site-specific data including VLANs, radius profiles, user groups,
@@ -37,6 +85,7 @@ def build_site_data(unifi, site_name: str, output_filename: str, make_template: 
     :rtype: None
     :raises Exception: If there is an issue with loading or saving the site data.
     """
+    logger.info(f'Getting local site data for {site_name}... ')
     ui_site = unifi.sites[site_name]
 
     logger.debug(f'Saving site info for {site_name} to {output_filename}...')
@@ -86,6 +135,7 @@ def build_site_data(unifi, site_name: str, output_filename: str, make_template: 
                 if os.path.exists(output_filename):
                     with open(output_filename, 'r', encoding='utf-8') as f:
                         data = json.load(f)
+                        logger.debug(f'Loaded existing site data for {site_name} from {output_filename}')
                 else:
                     data = {}
 
@@ -96,6 +146,7 @@ def build_site_data(unifi, site_name: str, output_filename: str, make_template: 
             # Write combined data back to file
             with open(output_filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
+                logger.info(f'Saved site data for {site_name} to {output_filename}')
         except Exception as e:
             logger.error(f'Failed to save site data to {output_filename}: {e}')
 
@@ -137,6 +188,9 @@ def process_controller(unifi, context: dict):
         with ThreadPoolExecutor(max_workers=config.MAX_SITE_THREADS) as executor:
             futures = []
             for site_name in site_names_to_process:
+                if not vlan_check(unifi, site_name):
+                    logger.error(f'Vlans not matching, skipping {site_name}... ')
+                    return None
                 futures.append(executor.submit(build_site_data, unifi, site_name, output_filename, make_template=False))
 
             # Wait for all site-processing threads to complete

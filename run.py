@@ -142,7 +142,7 @@ if __name__ == "__main__":
     if args.add:
         logging.info(f"Option selected: Add")
 
-        # Remove "global_settings" if it does not support add_item_to_site
+        # Remove "global_settings", it does not support add_item_to_site
         context_dict.pop("global_settings", None)
 
         for context_item in context_dict:

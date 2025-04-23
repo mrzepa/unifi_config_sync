@@ -14,6 +14,9 @@ from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
+import threading
+
+site_data_lock = threading.Lock()
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -171,8 +174,16 @@ def add_item_to_site(unifi, site_name: str, context: dict):
     ui_site = unifi.sites[site_name]
 
     site_data_filename = os.path.join(config.SITE_DATA_DIR, config.SITE_DATA_FILE)
-    with open(site_data_filename, 'r') as f:
-        all_site_data = json.load(f)
+    with site_data_lock:
+        try:
+            with open(site_data_filename, 'r') as f:
+                all_site_data = json.load(f)
+        except FileNotFoundError:
+            logger.error(f"Site data file not found: {site_data_filename}")
+            raise
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON in site data file: {site_data_filename}")
+            raise
 
     site_data = all_site_data.get(site_name)
     vlans = site_data.get("vlans")

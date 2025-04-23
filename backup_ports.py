@@ -6,7 +6,9 @@ import json
 import os
 import threading
 import warnings
+import argparse
 from dotenv import load_dotenv
+from utils import setup_logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 logger = logging.getLogger(__name__)

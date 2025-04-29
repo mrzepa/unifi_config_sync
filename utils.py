@@ -188,9 +188,10 @@ def process_controller(unifi, context: dict):
         with ThreadPoolExecutor(max_workers=config.MAX_SITE_THREADS) as executor:
             futures = []
             for site_name in site_names_to_process:
-                if not vlan_check(unifi, site_name):
-                    logger.error(f'Vlans not matching, skipping {site_name}... ')
-                    return None
+                if not context.get('skip_vlan_check'):
+                    if not vlan_check(unifi, site_name):
+                        logger.error(f'Vlans not matching, skipping {site_name}... ')
+                        return None
                 futures.append(executor.submit(build_site_data, unifi, site_name, output_filename, make_template=False))
 
             # Wait for all site-processing threads to complete

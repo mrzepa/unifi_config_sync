@@ -252,6 +252,8 @@ if __name__ == "__main__":
         context['endpoint'] = context_dict[context_item]['endpoint']
         if context_item == 'global_settings':
             context['include_names_list'] = ['global_switch']
+        if context_item == 'network_conf':
+            context['skip_vlan_check'] = True
 
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:

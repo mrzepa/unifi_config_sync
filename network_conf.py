@@ -444,7 +444,8 @@ if __name__ == "__main__":
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,
-                   'exclude_name_list': args.exclude_names,}
+                   'exclude_name_list': args.exclude_names,
+                   'skip_vlan_check': True}
         # Use concurrent.futures to handle multithreading
         with ThreadPoolExecutor(max_workers=MAX_CONTROLLER_THREADS) as executor:
             # Submit each controller to the thread pool for processing

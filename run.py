@@ -224,6 +224,10 @@ if __name__ == "__main__":
         'exclude_name_list': args.exclude_names,
         'site_names': site_names,
     }
+    if args.verbose:
+        base_context['verbose'] = True
+    else:
+        base_context['verbose'] = False
 
     # backup unifi switch ports
     # Use concurrent.futures to handle multithreading

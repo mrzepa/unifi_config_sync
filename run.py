@@ -213,8 +213,8 @@ if __name__ == "__main__":
     ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
     if not args.get:
         try:
-            with open(ui_name_path, 'r') as f:
-                site_names = [line.strip() for line in f if line.strip()]
+            with open(ui_name_path, 'r', encoding="utf-8") as f:
+                site_names = [line.strip().replace("\xa0", " ") for line in f if line.strip()]
         except FileNotFoundError:
             logger.critical(f'No file {ui_name_path} found. Please create a file with site names, one per line.')
             sys.exit(1)

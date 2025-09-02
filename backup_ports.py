@@ -30,7 +30,9 @@ def port_backup(unifi, site_name: str):
     """
     backup_dir = os.path.join(config.BACKUP_DIR, site_name)
     os.makedirs(backup_dir, exist_ok=True)
+    logger.debug(f'Backing up ports for {site_name}...')
     ui_site = unifi.sites[site_name]
+    logger.debug(f'ui_site is {ui_site}')
     devices = ui_site.device.all()
     ignore_port_info = ['rx_broadcast', 'rx_bytes', 'rx_dropped', 'rx_errors', 'rx_multicast', 'rx_packets',
                         'tx_broadcast',
@@ -91,10 +93,12 @@ def process_backups(unifi, context: dict):
     :rtype: None
     """
     site_names_set = set(context.get("site_names", []))
+    logger.debug(f'Site names to process: {site_names_set}')
     if site_names_set:
         # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
         # site names provided.
         ui_site_names_set = set(unifi.sites.keys())
+        logger.debug(f'Sites on controller: {ui_site_names_set}')
         site_names_to_process = list(site_names_set.intersection(ui_site_names_set))
         logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')
         if len(site_names_to_process) == 0:

@@ -94,10 +94,15 @@ def process_backups(unifi, context: dict):
     """
     site_names_set = set(context.get("site_names", []))
     logger.debug(f'Site names to process: {site_names_set}')
+    norm = lambda s: s.replace("\xa0", " ") if isinstance(s, str) else s
+
     if site_names_set:
         # Fetch sites, we only care to process the list of site names on this controller that are part of the list of
         # site names provided.
-        ui_site_names_set = set(unifi.sites.keys())
+        ui_site_name_map = {norm(k): k for k in unifi.sites.keys()}
+        ui_site_names_set = set(ui_site_name_map.keys())
+
+        # ui_site_names_set = set(unifi.sites.keys())
         logger.debug(f'Sites on controller: {ui_site_names_set}')
         site_names_to_process = list(site_names_set.intersection(ui_site_names_set))
         logger.debug(f'Found {len(site_names_to_process)} sites to process for controller {unifi.base_url}.')

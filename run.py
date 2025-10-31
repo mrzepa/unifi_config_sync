@@ -87,13 +87,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Read in the environment variables
-    try:
-        ui_username = os.getenv("UI_USERNAME")
-        ui_password = os.getenv("UI_PASSWORD")
-        ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_username = os.getenv("UI_USERNAME")
+    ui_password = os.getenv("UI_PASSWORD")
+    ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_api_key = os.getenv("UI_API_KEY")
 
-    except KeyError as e:
-        logger.exception("Unifi username or password is missing from environment variables.")
+    # Require either API key OR username/password/mfa
+    if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+        logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
         raise SystemExit(1)
 
     # get the list of controllers
@@ -237,7 +238,8 @@ if __name__ == "__main__":
                                                 base_context,
                                                 ui_username,
                                                 ui_password,
-                                                ui_mfa_secret): controller for controller in
+                                                ui_mfa_secret,
+                                                ui_api_key): controller for controller in
                                 controller_list}
 
         # Wait for all controller-processing threads to complete
@@ -266,7 +268,8 @@ if __name__ == "__main__":
                                                     context,
                                                     ui_username,
                                                     ui_password,
-                                                    ui_mfa_secret): controller for controller in
+                                                    ui_mfa_secret,
+                                                    ui_api_key): controller for controller in
                                     controller_list}
 
             # Wait for all controller-processing threads to complete

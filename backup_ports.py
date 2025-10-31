@@ -124,7 +124,7 @@ def process_backups(unifi, context: dict):
             except Exception as e:
                 logger.exception(f"Error in process controller: {e}")
 
-def backup_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str):
+def backup_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None):
     """
     Processes a single controller by creating a Unifi instance, authenticating, and delegating the
     controller processing task. This function acts as a wrapper that prepares and initializes
@@ -137,7 +137,7 @@ def backup_single_controller(controller, context: dict, username: str, password:
     :param mfa_secret: MFA secret for additional authentication layer.
     :return: The result of processing the given controller.
     """
-    unifi = Unifi(controller, username, password, mfa_secret)
+    unifi = Unifi(controller, username, password, mfa_secret, api_key=api_key)
     if context['verbose']:
         logger.debug('Sites found on controller:')
         for site in unifi.sites:
@@ -181,13 +181,14 @@ if __name__ == "__main__":
         setup_logging(logging.INFO)
 
     # Read in the environment variables
-    try:
-        ui_username = os.getenv("UI_USERNAME")
-        ui_password = os.getenv("UI_PASSWORD")
-        ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_username = os.getenv("UI_USERNAME")
+    ui_password = os.getenv("UI_PASSWORD")
+    ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_api_key = os.getenv("UI_API_KEY")
 
-    except KeyError as e:
-        logger.critical("Unifi username or password is missing from environment variables.")
+    # Require either API key OR username/password/mfa
+    if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+        logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
         raise SystemExit(1)
 
     # get the list of controllers
@@ -210,7 +211,8 @@ if __name__ == "__main__":
                                                 context,
                                                 ui_username,
                                                 ui_password,
-                                                ui_mfa_secret): controller for controller in
+                                                ui_mfa_secret,
+                                                ui_api_key): controller for controller in
                                 controller_list}
 
         # Wait for all controller-processing threads to complete

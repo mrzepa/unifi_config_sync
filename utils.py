@@ -217,7 +217,7 @@ def process_controller(unifi, context: dict):
                 logger.exception(f"Error in process controller: {e}")
 
 
-def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str):
+def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None):
     """
     Processes a single controller by creating a Unifi instance, authenticating, and delegating the
     controller processing task. This function acts as a wrapper that prepares and initializes
@@ -230,7 +230,7 @@ def process_single_controller(controller, context: dict, username: str, password
     :param mfa_secret: MFA secret for additional authentication layer.
     :return: The result of processing the given controller.
     """
-    unifi = Unifi(controller, username, password, mfa_secret)
+    unifi = Unifi(controller, username, password, mfa_secret, api_key=api_key)
 
     if not unifi.sites:
         return None

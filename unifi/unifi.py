@@ -1,14 +1,15 @@
 import logging
-import requests
-import warnings
-import json
-from icecream import ic
 import os
+import requests
 import json
-from urllib3.exceptions import InsecureRequestWarning
 import pyotp
+import time
+import warnings
+from datetime import datetime, timedelta
+from unifi.sites import Sites
+from unifi.endpoints import get_sites_candidate_urls, AuthMethod
+from urllib3.exceptions import InsecureRequestWarning
 import threading
-from .sites import Sites
 
 file_lock = threading.Lock()
 
@@ -45,20 +46,26 @@ class Unifi:
     SESSION_FILE = os.path.expanduser("~/.unifi_session.json")
     _session_data = {}  # Class-level session storage by base_url
 
-    def __init__(self, base_url=None, username=None, password=None, mfa_secret=None):
+    def __init__(self, base_url=None, username=None, password=None, mfa_secret=None, api_key=None, mfa_field=None):
         self.base_url = base_url
         self.username = username
         self.password = password
         self.mfa_secret = mfa_secret
+        self.api_key = api_key
+        self.mfa_field = mfa_field or 'auto'
         self.udm_pro = ''
         self.session_cookie = None
         self.csrf_token = None
+        self.http_session = None
 
-        if not all([self.base_url, self.username, self.password, self.mfa_secret]):
+        if not self.base_url:
+            raise ValueError("Missing required environment variable: BASE_URL")
+        if not self.api_key and not all([self.username, self.password, self.mfa_secret]):
             raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")
 
         self.load_session_from_file()
-        self.authenticate()
+        if not self.api_key:
+            self.authenticate()
         self.sites = self.get_sites()
 
     def save_session_to_file(self):
@@ -93,66 +100,115 @@ class Unifi:
             logger.error("Max authentication retries reached. Aborting authentication.")
             raise Exception("Authentication failed after maximum retries.")
 
-        login_endpoint = f"{self.base_url}/api/{self.udm_pro}login"
+        login_endpoints = [
+            f"{self.base_url}/api/auth/login",
+            f"{self.base_url}/api/{self.udm_pro}login",
+        ]
         if not self.mfa_secret:
             raise ValueError("MFA_SECRET is missing or invalid.")
 
         otp = pyotp.TOTP(self.mfa_secret)
-        payload = {
-            "username": self.username,
-            "password": self.password,
-            "ubic_2fa_token": otp.now(),
-        }
+        otp_value = otp.now()
+        fields = ["token", "ubic_2fa_token"] if self.mfa_field == 'auto' else [self.mfa_field]
 
-        session = requests.Session()
-        session.timeout = 10
+        last_error = None
+        for endpoint in login_endpoints:
+            session = requests.Session()
+            session.timeout = 10
+            headers = {"Content-Type": "application/json"}
 
-        try:
-            response = session.post(login_endpoint, json=payload, verify=False)
-            response_data = response.json()
-            # response.raise_for_status()
-            if response_data.get("meta", {}).get("rc") == "ok":
-                logger.info("Logged in successfully.")
+            for field in fields:
+                payload = {
+                    "username": self.username,
+                    "password": self.password,
+                }
+                payload[field] = otp_value
+                # UniFi 9.5 requires rememberMe field for /api/auth/login
+                if "/api/auth/login" in endpoint:
+                    payload["rememberMe"] = False
 
-                self.session_cookie = session.cookies.get("unifises")
-                # self.csrf_token = session.cookies.get("csrf_token")
-                self.save_session_to_file()
-                return
-            elif response_data.get("meta", {}).get("msg") == "api.err.Invalid2FAToken":
-                logger.warning("Invalid 2FA token detected. Waiting for the next token...")
-                # Wait for the current TOTP token to expire (~30 seconds for most TOTP systems)
-                import time
-                time_remaining = otp.interval - (int(time.time()) % otp.interval)
-                logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")
-                # Countdown for user clarity
-                while time_remaining > 0:
-                    print(f"\rRetrying authentication in {time_remaining} seconds...", end="")
-                    time.sleep(1)
-                    time_remaining -= 1
-                print("\nRetrying now!")
+                # Log payload structure (without sensitive data)
+                payload_keys = list(payload.keys())
+                logger.debug(f"Login payload fields: {payload_keys}")
 
-                # Retry authentication with the next token
-                return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
-            elif response_data.get("meta", {}).get("msg") == "api.err.Invalid":
+                try:
+                    response = session.post(endpoint, json=payload, headers=headers, verify=False)
+                    response_data = None
+                    try:
+                        response_data = response.json()
+                    except ValueError:
+                        response_data = {"status_code": response.status_code}
+
+                    cookie = session.cookies.get("unifises")
+                    
+                    # Log response for debugging
+                    logger.debug(f"Auth attempt endpoint={endpoint} field={field} status={response.status_code} has_cookie={bool(cookie)}")
+                    if response_data:
+                        logger.debug(f"Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'not a dict'}")
+
+                    # UniFi 9.5 /api/auth/login returns 200 with session in cookies and no JSON body
+                    if "/api/auth/login" in endpoint and response.status_code == 200:
+                        logger.info("Logged in successfully (UniFi 9.5+ auth).")
+                        self.session_cookie = cookie
+                        self.http_session = session
+                        self.save_session_to_file()
+                        return
+                    # Legacy: Check for meta.rc == "ok"
+                    if isinstance(response_data, dict) and response_data.get("meta", {}).get("rc") == "ok":
+                        logger.info("Logged in successfully (legacy auth).")
+                        self.session_cookie = cookie
+                        self.http_session = session
+                        self.save_session_to_file()
+                        return
+                    # Fallback: Accept 200 with cookie
+                    if response.status_code == 200 and cookie:
+                        logger.info("Logged in successfully (cookie-based auth).")
+                        self.session_cookie = cookie
+                        self.http_session = session
+                        self.save_session_to_file()
+                        return
+                    elif isinstance(response_data, dict) and response_data.get("meta", {}).get("msg") == "api.err.Invalid2FAToken":
+                        logger.warning("Invalid 2FA token detected. Waiting for the next token...")
+                        import time
+                        time_remaining = otp.interval - (int(time.time()) % otp.interval)
+                        logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")
+                        while time_remaining > 0:
+                            print(f"\rRetrying authentication in {time_remaining} seconds...", end="")
+                            time.sleep(1)
+                            time_remaining -= 1
+                        print("\nRetrying now!")
+                        return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
+                    else:
+                        # Minimal debug for failures
+                        snippet = None
+                        try:
+                            snippet = json.dumps(response_data)[:200]
+                        except Exception:
+                            snippet = str(response.text)[:200] if hasattr(response, 'text') else str(response_data)
+                        logger.debug(f"Auth failed endpoint={endpoint} field={field} status={response.status_code} body_snippet={snippet}")
+                        last_error = response_data or {"status_code": response.status_code}
+                        continue
+                except requests.exceptions.HTTPError as http_err:
+                    logger.error(f"HTTP error occurred: {http_err}")
+                    return None
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Authentication error: {e}. Retrying ({retry_count + 1}/{max_retries})...")
+                    return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to decode JSON response: {json_err}")
+                    return None
+
+        if last_error:
+            if last_error.get("meta", {}).get("msg") == "api.err.Invalid":
                 logger.error(f'Login failed, invalid credentials.')
                 return None
-            else:
-                logger.error(f"Login failed: {response_data.get('meta', {}).get('msg')}")
-                raise Exception("Login failed.")
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Authentication error: {e}. Retrying ({retry_count + 1}/{max_retries})...")
-            return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
-        except json.JSONDecodeError as json_err:
-            logger.error(f"Failed to decode JSON response: {json_err}")
-            return None
+            logger.error(f"Login failed: {last_error.get('meta', {}).get('msg')}")
+            raise Exception("Login failed.")
 
-    def make_request(self, endpoint, method="GET", data=None, retry_count=0, max_retries=3):
+    def make_request(self, endpoint, method="GET", data=None, params=None, retry_count=0, max_retries=3):
         """Makes an authenticated request to the UniFi API."""
         # if not self.session_cookie or not self.csrf_token:
-        if not self.session_cookie:
+        if not self.api_key and not (self.session_cookie or self.http_session):
             logger.info("No valid session. Authenticating...")
             self.authenticate()
 
@@ -160,21 +216,25 @@ class Unifi:
             # "X-CSRF-Token": self.csrf_token,
             "Content-Type": "application/json"
         }
+        if self.api_key:
+            headers["X-API-KEY"] = self.api_key
+            headers["Accept"] = "application/json"
         cookies = {
             "unifises": self.session_cookie
-        }
+        } if (not self.api_key and self.session_cookie) else None
 
         url = f"{self.base_url}{endpoint}"
 
         try:
+            sess = self.http_session if (self.http_session and not self.api_key) else requests
             if method.upper() == "GET":
-                response = requests.get(url, headers=headers, cookies=cookies, verify=False)
+                response = sess.get(url, headers=headers, cookies=cookies, params=params, verify=False)
             elif method.upper() == "POST":
-                response = requests.post(url, json=data, headers=headers, cookies=cookies, verify=False)
+                response = sess.post(url, json=data, headers=headers, cookies=cookies, params=params, verify=False)
             elif method.upper() == "PUT":
-                response = requests.put(url, json=data, headers=headers, cookies=cookies, verify=False)
+                response = sess.put(url, json=data, headers=headers, cookies=cookies, params=params, verify=False)
             elif method.upper() == "DELETE":
-                response = requests.delete(url, headers=headers, cookies=cookies, verify=False)
+                response = sess.delete(url, headers=headers, cookies=cookies, params=params, verify=False)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -187,11 +247,15 @@ class Unifi:
                         return response_data
                     elif response_data.get('meta', {}).get('msg') == 'api.err.SessionExpired':
                         logger.warning("Session expired. Re-authenticating...")
-                        self.authenticate()
-                        return self.make_request(endpoint, method, data, retry_count=0)
+                        if not self.api_key:
+                            self.authenticate()
+                            return self.make_request(endpoint, method, data, retry_count=0)
+                        return response_data
                     elif response_data.get('meta', {}).get('msg') == 'api.err.LoginRequired':
-                        self.authenticate()
-                        return self.make_request(endpoint, method, data, retry_count=0)
+                        if not self.api_key:
+                            self.authenticate()
+                            return self.make_request(endpoint, method, data, retry_count=0)
+                        return response_data
                     else:
                         logger.error(f"Request failed with 401: {response_data.get('meta', {}).get('msg')}")
                         return response_data
@@ -202,7 +266,13 @@ class Unifi:
                 return response_data
 
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except json.JSONDecodeError as json_err:
+                # Log snippet of non-JSON response for debugging
+                snippet = response.text[:200] if hasattr(response, 'text') else ''
+                logger.debug(f"JSON decode failed for {url}: {snippet}")
+                return None
         except requests.exceptions.RequestException as e:
             logger.error(f"An error occurred: {e}")
             return None
@@ -228,15 +298,89 @@ class Unifi:
         """
 
         logger.debug(f'Fetching sites from Unifi controller.')
-        response = self.make_request("/api/self/sites", "GET")
-
-        if not response:
-            raise ValueError(f'No sites found.')
-        if response.get('meta', {}).get('rc') == 'ok':
-            sites = response.get("data", [])
-            return {site["desc"]: Sites(self, site) for site in sites}
-        else:
-            logger.error(response.get('meta', {}).get('msg'))
+        
+        # Determine auth method and get candidate URLs from registry
+        auth_method = AuthMethod.API_KEY if self.api_key else AuthMethod.SESSION
+        candidates = get_sites_candidate_urls(auth_method)
+        
+        # Try each endpoint from the registry
+        for endpoint, api_version in candidates:
+            logger.debug(f"Trying sites endpoint: {endpoint} (API version: {api_version})")
+            
+            if api_version == "integration":
+                # Integration API with pagination
+                all_sites = []
+                limit = 100
+                offset = 0
+                total = None
+                while True:
+                    response = self.make_request(endpoint, "GET", params={"limit": limit, "offset": offset})
+                    if not response:
+                        break
+                    data = []
+                    if isinstance(response, dict):
+                        data = response.get("data") or []
+                        total = response.get("totalCount", total)
+                    elif isinstance(response, list):
+                        data = response
+                    if not isinstance(data, list):
+                        data = []
+                    all_sites.extend(data)
+                    if total is not None:
+                        if len(all_sites) >= int(total):
+                            break
+                    if len(data) < limit:
+                        break
+                    offset += limit
+                
+                if all_sites:
+                    # Successfully retrieved sites from Integration API
+                    mapped = []
+                    for item in all_sites:
+                        name = item.get("internalReference") or item.get("name") or item.get("site") or item.get("short_name") or item.get("desc") or ""
+                        desc = item.get("name") or item.get("desc") or item.get("description") or name
+                        _id = item.get("_id") or item.get("id") or item.get("site_id") or item.get("unique_id")
+                        mapped.append({"name": name, "desc": desc, "_id": _id})
+                    if mapped:
+                        logger.debug(f"Successfully retrieved {len(mapped)} sites from {api_version}")
+                        return {site["desc"]: Sites(self, site) for site in mapped if site.get("desc")}
+            else:
+                # Simple GET request for v2 and legacy endpoints
+                response = self.make_request(endpoint, "GET")
+                if response:
+                    sites_data = []
+                    
+                    # Handle different response formats
+                    if isinstance(response, list):
+                        sites_data = response
+                    elif isinstance(response, dict):
+                        if response.get('meta', {}).get('rc') == 'ok':
+                            sites_data = response.get('data', [])
+                        elif 'data' in response:
+                            sites_data = response['data']
+                        elif api_version == "v2":
+                            # v2 might return sites directly in response
+                            sites_data = [response] if '_id' in response or 'id' in response else []
+                    
+                    if sites_data:
+                        # Map to standard format
+                        if api_version in ["integration", "v2"]:
+                            mapped = []
+                            for item in sites_data:
+                                name = item.get("internalReference") or item.get("name") or item.get("site") or item.get("short_name") or item.get("desc") or ""
+                                desc = item.get("name") or item.get("desc") or item.get("description") or name
+                                _id = item.get("_id") or item.get("id") or item.get("site_id") or item.get("unique_id")
+                                mapped.append({"name": name, "desc": desc, "_id": _id})
+                            if mapped:
+                                logger.debug(f"Successfully retrieved {len(mapped)} sites from {api_version}")
+                                return {site["desc"]: Sites(self, site) for site in mapped if site.get("desc")}
+                        else:
+                            # Legacy format
+                            logger.debug(f"Successfully retrieved {len(sites_data)} sites from {api_version}")
+                            return {site.get("desc", site.get("name")): Sites(self, site) for site in sites_data}
+        
+        # No endpoint worked
+        raise ValueError(f'No sites found after trying all available endpoints.')
 
     def site(self, name):
         """Get a single site by name."""

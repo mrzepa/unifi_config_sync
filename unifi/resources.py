@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 import json
 import threading
 
-file_lock = threading.Lock()
-
+from unifi.resources import BaseResource
+from unifi.endpoints import get_resource_candidate_urls, APIVersion
 logger = logging.getLogger(__name__)
+
+file_lock = threading.Lock()
 
 class BaseResource:
 
@@ -19,8 +21,7 @@ class BaseResource:
         self._id: int = None  # The resource ID
         self.name: str = kwargs.get('name', None)
         self.site = site
-        self.base_path: str = kwargs.get('base_path', None)
-        self.api_path: str = kwargs.get('api_path', None)
+        self.output_dir: str = kwargs.get('output_dir', None)
 
     def __str__(self):
         return f"{self.__class__.__name__}: {self.name}"
@@ -57,12 +58,20 @@ class BaseResource:
                             matching resources or multiple matches.
         """
         site_name = self.site.name
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
         matching_items = []
-        all_items = self.unifi.make_request(url, 'GET')
+        all_items = None
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} endpoint: {url} (API version: {api_version})")
+            all_items = self.unifi.make_request(url, 'GET')
+            if all_items:
+                logger.debug(f"Successfully fetched {self.endpoint} from {api_version}")
+                break
         if all_items.get("meta", {}).get('rc') == 'ok':
             for item in all_items.get('data', []):
                 if all(item.get(key) == value for key, value in filters.items()):
@@ -96,11 +105,19 @@ class BaseResource:
         :rtype: list
         """
         site_name = self.site.name
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
-        all_items = self.unifi.make_request(url, 'GET')
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        all_items = None
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} endpoint: {url} (API version: {api_version})")
+            all_items = self.unifi.make_request(url, 'GET')
+            if all_items is not None:
+                logger.debug(f"Successfully fetched {self.endpoint} from {api_version}")
+                break
         if not all_items:
             logger.error(f'Could not get data for {self.endpoint}.')
             return []
@@ -162,15 +179,23 @@ class BaseResource:
         :raises ValueError: If no data is provided to create the resource.
         """
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not data:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
-        response = self.unifi.make_request(url, 'POST', data=data)
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} create endpoint: {url} (API version: {api_version})")
+            response = self.unifi.make_request(url, 'POST', data=data)
+            if response:
+                logger.debug(f"Successfully created {self.endpoint} using {api_version}")
+                break
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully created {self.endpoint} at site '{self.site.desc}'")
             return response.get('data', {})
@@ -179,22 +204,34 @@ class BaseResource:
 
     def update(self, data: dict = None, path: str = None):
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not data:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
+        
+        # Build URLs for update (add path or _id to endpoint)
+        base_endpoint = self.endpoint
         if path:
-            if self.base_path:
-                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{path}"
-            else:
-                url = f"{self.api_path}/{site_name}/{self.endpoint}/{path}"
-        else:
-            if self.base_path:
-                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{self._id}"
-            else:
-                url = f"{self.api_path}/{site_name}/{self.endpoint}/{self._id}"
-            path = None
-        response = self.unifi.make_request(url, 'PUT', data=data)
+            self.endpoint = f"{base_endpoint}/{path}"
+        elif self._id:
+            self.endpoint = f"{base_endpoint}/{self._id}"
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {base_endpoint} update endpoint: {url} (API version: {api_version})")
+            resp_try = self.unifi.make_request(url, 'PUT', data=data)
+            if resp_try:
+                response = resp_try
+                logger.debug(f"Successfully updated {base_endpoint} using {api_version}")
+                break
+        
+        # Restore original endpoint
+        self.endpoint = base_endpoint
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{self.site.desc}'")
             return response.get('data', {})
@@ -217,15 +254,31 @@ class BaseResource:
         :raises ValueError: If no `item_id` is provided and the `_id` attribute is also not set.
         """
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not item_id:
             item_id = self._id
         if not item_id:
             raise ValueError(f'Item ID required to delete {self.endpoint}.')
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{item_id}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}/{item_id}"
-        response = self.unifi.make_request(url, 'DELETE')
+        
+        # Build URLs for delete (add item_id to endpoint)
+        base_endpoint = self.endpoint
+        self.endpoint = f"{base_endpoint}/{item_id}"
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {base_endpoint} delete endpoint: {url} (API version: {api_version})")
+            resp_try = self.unifi.make_request(url, 'DELETE')
+            if resp_try:
+                response = resp_try
+                logger.debug(f"Successfully deleted {base_endpoint} using {api_version}")
+                break
+        
+        # Restore original endpoint
+        self.endpoint = base_endpoint
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully deleted {self.endpoint} with ID {item_id} at site '{site_name}'")
             return True

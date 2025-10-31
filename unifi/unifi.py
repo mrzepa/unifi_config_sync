@@ -307,7 +307,7 @@ class Unifi:
         for endpoint, api_version in candidates:
             logger.debug(f"Trying sites endpoint: {endpoint} (API version: {api_version})")
             
-            if api_version == "integration":
+            if api_version == "proxy_integration":
                 # Integration API with pagination
                 all_sites = []
                 limit = 100
@@ -358,13 +358,13 @@ class Unifi:
                             sites_data = response.get('data', [])
                         elif 'data' in response:
                             sites_data = response['data']
-                        elif api_version == "v2":
+                        elif api_version == "proxy_v2":
                             # v2 might return sites directly in response
                             sites_data = [response] if '_id' in response or 'id' in response else []
                     
                     if sites_data:
                         # Map to standard format
-                        if api_version in ["integration", "v2"]:
+                        if api_version in ["proxy_integration", "proxy_v2"]:
                             mapped = []
                             for item in sites_data:
                                 name = item.get("internalReference") or item.get("name") or item.get("site") or item.get("short_name") or item.get("desc") or ""

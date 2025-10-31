@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import json
 import threading
 
-from unifi.resources import BaseResource
 from unifi.endpoints import get_resource_candidate_urls, APIVersion
 logger = logging.getLogger(__name__)
 

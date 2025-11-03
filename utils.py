@@ -217,7 +217,7 @@ def process_controller(unifi, context: dict):
                 logger.exception(f"Error in process controller: {e}")
 
 
-def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None):
+def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None, permission_callback=None):
     """
     Processes a single controller by creating a Unifi instance, authenticating, and delegating the
     controller processing task. This function acts as a wrapper that prepares and initializes
@@ -225,19 +225,61 @@ def process_single_controller(controller, context: dict, username: str, password
 
     :param controller: The controller instance to be processed.
     :param context: Dictionary containing the context required for processing the controller.
-    :param username: Username to authenticate with the controller.
-    :param password: Password to authenticate with the controller.
-    :param mfa_secret: MFA secret for additional authentication layer.
+    :param username: Username to authenticate with the controller (global, same for all controllers).
+    :param password: Password to authenticate with the controller (global, same for all controllers).
+    :param mfa_secret: MFA secret for additional authentication layer (global, same for all controllers).
+    :param api_key: Global API key (fallback if no per-controller key is configured).
+    :param permission_callback: Callback function to call when permission error is detected.
     :return: The result of processing the given controller.
     """
-    unifi = Unifi(controller, username, password, mfa_secret, api_key=api_key)
+    # Check if API key auth is disabled in config
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        logger.debug(f"API key authentication skipped for: {controller} (SKIP_API_KEY_AUTH=True)")
+        controller_api_key = None
+    else:
+        # Get per-controller API key environment variable name if configured
+        controller_api_key_env = getattr(config, 'CONTROLLER_API_KEYS', {}).get(controller)
+        
+        if controller_api_key_env:
+            # Use per-controller API key from environment variable
+            controller_api_key = os.getenv(controller_api_key_env)
+            if controller_api_key:
+                logger.debug(f"Using per-controller API key from {controller_api_key_env} for: {controller}")
+            else:
+                logger.warning(f"Environment variable {controller_api_key_env} not found for controller: {controller}")
+                controller_api_key = None
+        else:
+            # No per-controller configuration
+            controller_api_key = None
+    
+    # Username/password/MFA are global (same across all controllers)
+    try:
+        unifi = Unifi(controller, username, password, mfa_secret, api_key=controller_api_key, permission_callback=permission_callback, force_modern_auth=skip_api_key_auth)
+    except PermissionError as e:
+        logger.error(f"Permission error for controller {controller}: {e}")
+        return None
+    except Exception as e:
+        if "AUTHENTICATION_FAILED_LIMIT_REACHED" in str(e):
+            # Rate limit error - exit gracefully without retrying other controllers
+            # The detailed error messages are already logged by the UniFi class, so just exit cleanly
+            raise SystemExit(1)
+        else:
+            logger.error(f"Authentication error for controller {controller}: {e}")
+            return None
 
     if not unifi.sites:
         return None
-    return process_controller(
-        unifi=unifi,
-        context=context,
-    )
+    
+    try:
+        return process_controller(
+            unifi=unifi,
+            context=context,
+        )
+    except PermissionError as e:
+        logger.error(f"Permission error during processing for controller {controller}: {e}")
+        return None
 
 def save_dicts_to_json(dict_list, output_dir="output"):
     """

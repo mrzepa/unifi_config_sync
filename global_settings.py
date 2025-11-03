@@ -104,6 +104,7 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
     """
     ui_site = unifi.sites[site_name]
     ENDPOINT = context.get("endpoint")
+    endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_name_list")
     vlans = {}
@@ -156,10 +157,30 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
                 if key == "radiusprofile_id" and new_items['radiusprofile_id']:
                     new_items[key] = radius_profiles_dict[new_items['radiusprofile_id_name']]
 
-            # Make the request to add the item
+            # Make the request to update the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            path = f"{item_name}/{item_id}"
-            ui_site.setting.update(data=new_items, path=path)
+            # For UniFi 9.5+, global settings use a different endpoint pattern
+            # We need to make a direct POST request to /set/setting/{key}
+            
+            # Get the site name (not ID) for the request - this matches the browser request
+            site_name_for_request = ui_site.name
+            
+            # Build the correct endpoint URL (base_url already includes the full URL)
+            url = f"{unifi.base_url}/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}"
+            
+            logger.debug(f"Making POST request to: {url}")
+            logger.debug(f"Data being sent: {new_items}")
+            
+            # Make the direct POST request
+            response = unifi.make_request(f"/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}", method="POST", data=new_items)
+            
+            if response and response.get('meta', {}).get('rc') == 'ok':
+                logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+            else:
+                error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
+                logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
+                if response:
+                    logger.error(f"Full response: {response}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

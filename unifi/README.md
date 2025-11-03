@@ -126,6 +126,42 @@ profiles = port_conf.all()
 print(f"Found {len(profiles)} port profiles")
 ```
 
+### Multi-Controller Authentication
+
+For managing multiple UniFi controllers with different API keys via environment variables:
+
+```python
+# In config.py
+CONTROLLERS = [
+    'https://controller1.example.com:8443',
+    'https://controller2.example.com:8443',
+    'https://controller3.example.com:8443',
+]
+
+# Map each controller to its own environment variable
+CONTROLLER_API_KEYS = {
+    'https://controller1.example.com:8443': 'UI_API_KEY_CONTROLLER_1',
+    'https://controller2.example.com:8443': 'UI_API_KEY_CONTROLLER_2',
+    'https://controller3.example.com:8443': 'UI_API_KEY_CONTROLLER_3',
+}
+```
+
+```bash
+# Set environment variables (never hardcode API keys)
+export UI_USERNAME="admin"                    # Global username
+export UI_PASSWORD="password"                 # Global password
+export UI_MFA_SECRET="your-mfa-secret"        # Global MFA secret
+
+# Per-controller API keys
+export UI_API_KEY_CONTROLLER_1="api-key-for-controller-1"
+export UI_API_KEY_CONTROLLER_2="api-key-for-controller-2"
+export UI_API_KEY_CONTROLLER_3="api-key-for-controller-3"
+```
+
+**Priority Order:**
+1. **Per-controller API key** from environment variable
+2. **Global username/password/MFA** (fallback if no API key configured)
+
 ## 🔑 API Key Setup (UniFi 9.5+)
 
 ### Step 1: Access UniFi Controller
@@ -139,6 +175,10 @@ print(f"Found {len(profiles)} port profiles")
 1. Click **Create API Key**
 2. Give the API key a descriptive name (e.g., "Python Scripts")
 3. Set the expiration date (e.g., 1 year)
+4. **Important**: Ensure the API key has **Full Access** permissions:
+   - ✅ **Read**: View configuration and status
+   - ✅ **Write**: Modify configuration  
+   - ✅ **Admin**: Full administrative access
 
 
 ### Step 3: Copy and Secure API Key
@@ -407,9 +447,11 @@ unifi = Unifi(base_url, api_key="your-api-key")
 ### Common Issues
 
 **Q: Getting "401 Unauthorized" with API key**
-- Verify the API key is correct
-- Check that the key has sufficient permissions
-- Ensure you're using UniFi 9.5+
+- ✅ **Verify API key format**: Ensure no extra spaces or characters
+- ✅ **Check permissions**: API key needs Full Admin access for write operations
+- ✅ **Test permissions**: Try read operations first, then write operations
+- ✅ **Check expiration**: Ensure API key hasn't expired
+- ✅ **Regenerate if needed**: Create a new API key if issues persist
 
 **Q: Sites endpoint returns 404**
 - The module automatically tries multiple endpoints
@@ -425,6 +467,40 @@ unifi = Unifi(base_url, api_key="your-api-key")
 - Ensure MFA secret is correct (Base32 format)
 - Check that system time is synchronized
 - Verify MFA is enabled for the admin account
+
+**Q: API key works for GET but fails for POST/PUT/DELETE**
+- This indicates **insufficient permissions**
+- Re-create API key with **Full Admin** access
+- Check that "Write" permissions are enabled
+
+**Q: Some controllers work but others fail with 401 Unauthorized**
+- Check your **CONTROLLER_API_KEYS** configuration in config.py
+- Verify the correct environment variables are set for each controller
+- Check that environment variables are spelled correctly
+- Ensure API keys haven't expired on specific controllers
+- Verify API keys have Full Admin permissions
+- Use debug logging to see which environment variable is being used
+
+**Q: How do I know which environment variable is being used?**
+Enable debug logging to see API key selection:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+The logs will show:
+- "Using per-controller API key from UI_API_KEY_CONTROLLER_1 for: [controller_url]"
+- "Environment variable UI_API_KEY_CONTROLLER_2 not found for controller: [controller_url]"
+
+**Q: How do I check if my environment variables are set?**
+```bash
+# Check all controller API key environment variables
+env | grep UI_API_KEY_CONTROLLER
+
+# Check global authentication variables
+env | grep UI_USERNAME
+env | grep UI_PASSWORD
+env | grep UI_MFA_SECRET
+```
 
 ### Debug Mode
 

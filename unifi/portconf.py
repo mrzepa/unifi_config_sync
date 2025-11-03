@@ -7,6 +7,6 @@ class PortConf(BaseResource):
         self.unifi = unifi
         self.site = site
         self.output_dir: str = kwargs.get('output_dir', "port_profiles")
-        super().__init__(unifi, endpoint='portconf', site=self.site, **kwargs)
+        super().__init__(unifi, endpoint='portconf', site=site, **kwargs)
 
 

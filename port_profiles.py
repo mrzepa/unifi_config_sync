@@ -196,20 +196,10 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
             new_items = read_json_file(file_path)
             item_name = new_items.get("name")
 
-            # Check if the item name exists and delete it using its _id
+            # Check if the item name exists and skip if it does
             if item_name in existing_item_map:
-                logger.info(f'Port profile with {item_name} already exists. Replacing it with new one.')
-                item_to_delete = existing_item_map[item_name]
-                item_id = item_to_delete.get("_id")
-                if item_id:
-                    item_to_backup = ui_site.port_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.port_conf.delete(item_id)
-                    if not delete_response:
-                        continue
-                else:
-                    logger.error(f"{ENDPOINT} '{item_name}' exists but its '_id' is missing. Skipping Port Profile {item_name}.")
-                    continue
+                logger.info(f'Port profile "{item_name}" already exists on site "{site_name}". Skipping processing.')
+                continue
 
             # modify the item for site specific vlan IDs
             for key, value in new_items.items():
@@ -416,10 +406,20 @@ if __name__ == "__main__":
     ui_mfa_secret = os.getenv("UI_MFA_SECRET")
     ui_api_key = os.getenv("UI_API_KEY")
 
-    # Require either API key OR username/password/mfa
-    if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
-        logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
-        sys.exit(1)
+    # Check if API key auth is disabled
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        # API key auth is disabled, require username/password/mfa
+        if not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("SKIP_API_KEY_AUTH is True. Provide UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            sys.exit(1)
+        logger.info("API key authentication disabled (SKIP_API_KEY_AUTH=True)")
+    else:
+        # Require either API key OR username/password/mfa
+        if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            sys.exit(1)
 
     # get the list of controllers
     controller_list = config.CONTROLLERS

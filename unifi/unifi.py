@@ -45,26 +45,31 @@ class Unifi:
     """
     SESSION_FILE = os.path.expanduser("~/.unifi_session.json")
     _session_data = {}  # Class-level session storage by base_url
+    _failed_auth_count = {}  # Class-level failed auth counter by base_url
 
-    def __init__(self, base_url=None, username=None, password=None, mfa_secret=None, api_key=None, mfa_field=None):
-        self.base_url = base_url
-        self.username = username
-        self.password = password
-        self.mfa_secret = mfa_secret
-        self.api_key = api_key
+    def __init__(self, base_url=None, username=None, password=None, mfa_secret=None, api_key=None, mfa_field=None, permission_callback=None, force_modern_auth=False):
+        # Allow direct parameters OR environment variables
+        self.base_url = base_url or os.getenv('BASE_URL')
+        self.username = username or os.getenv('USERNAME')
+        self.password = password or os.getenv('PASSWORD')
+        self.mfa_secret = mfa_secret or os.getenv('MFA_SECRET')
+        self.api_key = api_key or os.getenv('UNIFI_API_KEY')
         self.mfa_field = mfa_field or 'auto'
+        self.force_modern_auth = force_modern_auth
         self.udm_pro = ''
         self.session_cookie = None
         self.csrf_token = None
         self.http_session = None
+        self.permission_error_count = 0  # Track 403 errors for graceful exit
+        self.permission_callback = permission_callback  # Callback to notify on permission error
 
         if not self.base_url:
-            raise ValueError("Missing required environment variable: BASE_URL")
-        if not self.api_key and not all([self.username, self.password, self.mfa_secret]):
-            raise ValueError("Missing required environment variables: BASE_URL, USERNAME, PASSWORD, or MFA_SECRET")
+            raise ValueError("Missing required parameter: base_url (or BASE_URL environment variable)")
+        if not self.api_key and not all([self.username, self.password]):
+            raise ValueError("Missing required parameters: either api_key OR username and password")
 
         self.load_session_from_file()
-        if not self.api_key:
+        if not self.api_key and not (self.session_cookie or self.http_session):
             self.authenticate()
         self.sites = self.get_sites()
 
@@ -72,9 +77,16 @@ class Unifi:
         """Save session data to file, grouped by base_url."""
         # Ensure session data for the current base_url is saved
 
+        # Extract cookies from http_session for UniFi 9.5+
+        session_cookies = {}
+        if self.http_session:
+            for cookie_name, cookie_value in self.http_session.cookies.items():
+                session_cookies[cookie_name] = cookie_value
+
         self._session_data[self.base_url] = {
             "session_cookie": self.session_cookie,
-            "csrf_token": self.csrf_token
+            "csrf_token": self.csrf_token,
+            "session_cookies": session_cookies  # Save all cookies for UniFi 9.5+
         }
         with file_lock:
             with open(self.SESSION_FILE, "w") as f:
@@ -92,7 +104,23 @@ class Unifi:
                 session_info = self._session_data[self.base_url]
                 self.session_cookie = session_info.get("session_cookie")
                 self.csrf_token = session_info.get("csrf_token")
-                logger.info(f"Loaded session data for {self.base_url} from file.")
+                session_cookies = session_info.get("session_cookies", {})
+                
+                # Recreate the http_session if we have session cookies (for UniFi 9.5+)
+                if session_cookies:
+                    self.http_session = requests.Session()
+                    for cookie_name, cookie_value in session_cookies.items():
+                        self.http_session.cookies.set(cookie_name, cookie_value)
+                    logger.info(f"Loaded session data for {self.base_url} from file ({len(session_cookies)} cookies).")
+                elif self.session_cookie:
+                    # Fallback to legacy session cookie
+                    self.http_session = requests.Session()
+                    self.http_session.cookies.set("unifises", self.session_cookie)
+                    if self.csrf_token:
+                        self.http_session.cookies.set("csrf_token", self.csrf_token)
+                    logger.info(f"Loaded session data for {self.base_url} from file (legacy cookie).")
+                else:
+                    logger.info(f"Loaded session data for {self.base_url} from file (no session cookies).")
 
     def authenticate(self, retry_count=0, max_retries=3):
         """Logs in and retrieves a session cookie and CSRF token."""
@@ -100,16 +128,27 @@ class Unifi:
             logger.error("Max authentication retries reached. Aborting authentication.")
             raise Exception("Authentication failed after maximum retries.")
 
-        login_endpoints = [
-            f"{self.base_url}/api/auth/login",
-            f"{self.base_url}/api/{self.udm_pro}login",
-        ]
-        if not self.mfa_secret:
-            raise ValueError("MFA_SECRET is missing or invalid.")
-
-        otp = pyotp.TOTP(self.mfa_secret)
-        otp_value = otp.now()
-        fields = ["token", "ubic_2fa_token"] if self.mfa_field == 'auto' else [self.mfa_field]
+        if self.force_modern_auth:
+            # Force modern UniFi 9.5+ authentication only
+            logger.debug(f"Force modern authentication enabled for {self.base_url}")
+            login_endpoints = [
+                f"{self.base_url}/api/auth/login",
+            ]
+        else:
+            # Try both legacy and modern endpoints (default behavior)
+            logger.debug(f"Trying both legacy and modern authentication endpoints for {self.base_url}")
+            login_endpoints = [
+                f"{self.base_url}/api/auth/login",
+                f"{self.base_url}/api/{self.udm_pro}login",
+            ]
+        # MFA is optional - try without first, then with if needed
+        if self.mfa_secret:
+            otp = pyotp.TOTP(self.mfa_secret)
+            otp_value = otp.now()
+            fields = ["token", "ubic_2fa_token"] if self.mfa_field == 'auto' else [self.mfa_field]
+        else:
+            otp_value = None
+            fields = []
 
         last_error = None
         for endpoint in login_endpoints:
@@ -117,12 +156,26 @@ class Unifi:
             session.timeout = 10
             headers = {"Content-Type": "application/json"}
 
-            for field in fields:
+            # Try authentication with different MFA field combinations
+            auth_attempts = []
+            
+            if not fields:
+                # No MFA - try basic login
+                auth_attempts.append([None])
+            else:
+                # Try each MFA field
+                auth_attempts = [[field] for field in fields]
+            
+            for fields_to_try in auth_attempts:
                 payload = {
                     "username": self.username,
                     "password": self.password,
                 }
-                payload[field] = otp_value
+                
+                # Add MFA token if available
+                if fields_to_try and fields_to_try[0] and otp_value:
+                    payload[fields_to_try[0]] = otp_value
+                
                 # UniFi 9.5 requires rememberMe field for /api/auth/login
                 if "/api/auth/login" in endpoint:
                     payload["rememberMe"] = False
@@ -141,8 +194,23 @@ class Unifi:
 
                     cookie = session.cookies.get("unifises")
                     
+                    # Check for authentication rate limiting
+                    if isinstance(response_data, dict):
+                        # Check multiple possible rate limit indicators
+                        rate_limit_indicators = [
+                            response_data.get("meta", {}).get("msg"),
+                            response_data.get("code"),
+                            response_data.get("message")
+                        ]
+                        
+                        if any(indicator in ["authentication_failed_limit_reached", "AUTHENTICATION_FAILED_LIMIT_REACHED", "rate.limit.exceeded", "too.many.requests", "authentication.limit.reached", "You've reached the login attempt limit"] for indicator in rate_limit_indicators):
+                            logger.error("UniFi controller authentication rate limit reached!")
+                            logger.error("Please wait 5-10 minutes before trying again.")
+                            raise Exception("AUTHENTICATION_FAILED_LIMIT_REACHED: UniFi controller rate limit. Please wait before retrying.")
+                    
                     # Log response for debugging
-                    logger.debug(f"Auth attempt endpoint={endpoint} field={field} status={response.status_code} has_cookie={bool(cookie)}")
+                    field_name = fields_to_try[0] if fields_to_try and fields_to_try[0] else "no_mfa"
+                    logger.debug(f"Auth attempt endpoint={endpoint} field={field_name} status={response.status_code} has_cookie={bool(cookie)}")
                     if response_data:
                         logger.debug(f"Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'not a dict'}")
 
@@ -152,6 +220,9 @@ class Unifi:
                         self.session_cookie = cookie
                         self.http_session = session
                         self.save_session_to_file()
+                        # Reset failed auth counter on successful login
+                        if self.base_url in self._failed_auth_count:
+                            self._failed_auth_count[self.base_url] = 0
                         return
                     # Legacy: Check for meta.rc == "ok"
                     if isinstance(response_data, dict) and response_data.get("meta", {}).get("rc") == "ok":
@@ -159,6 +230,9 @@ class Unifi:
                         self.session_cookie = cookie
                         self.http_session = session
                         self.save_session_to_file()
+                        # Reset failed auth counter on successful login
+                        if self.base_url in self._failed_auth_count:
+                            self._failed_auth_count[self.base_url] = 0
                         return
                     # Fallback: Accept 200 with cookie
                     if response.status_code == 200 and cookie:
@@ -166,18 +240,25 @@ class Unifi:
                         self.session_cookie = cookie
                         self.http_session = session
                         self.save_session_to_file()
+                        # Reset failed auth counter on successful login
+                        if self.base_url in self._failed_auth_count:
+                            self._failed_auth_count[self.base_url] = 0
                         return
                     elif isinstance(response_data, dict) and response_data.get("meta", {}).get("msg") == "api.err.Invalid2FAToken":
-                        logger.warning("Invalid 2FA token detected. Waiting for the next token...")
-                        import time
-                        time_remaining = otp.interval - (int(time.time()) % otp.interval)
-                        logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")
-                        while time_remaining > 0:
-                            print(f"\rRetrying authentication in {time_remaining} seconds...", end="")
-                            time.sleep(1)
-                            time_remaining -= 1
-                        print("\nRetrying now!")
-                        return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
+                        if self.mfa_secret:
+                            logger.warning("Invalid 2FA token detected. Waiting for the next token...")
+                            import time
+                            time_remaining = otp.interval - (int(time.time()) % otp.interval)
+                            logger.warning(f"Invalid 2FA token detected. Next token available in {time_remaining}s.")
+                            while time_remaining > 0:
+                                logger.debug(f"\rRetrying authentication in {time_remaining} seconds...", end="")
+                                time.sleep(1)
+                                time_remaining -= 1
+                            logger.debug("\nRetrying now!")
+                            return self.authenticate(retry_count=retry_count + 1, max_retries=max_retries)
+                        else:
+                            logger.error("2FA token required but MFA_SECRET not provided")
+                            continue  # Try next auth method
                     else:
                         # Minimal debug for failures
                         snippet = None
@@ -185,7 +266,7 @@ class Unifi:
                             snippet = json.dumps(response_data)[:200]
                         except Exception:
                             snippet = str(response.text)[:200] if hasattr(response, 'text') else str(response_data)
-                        logger.debug(f"Auth failed endpoint={endpoint} field={field} status={response.status_code} body_snippet={snippet}")
+                        logger.debug(f"Auth failed endpoint={endpoint} field={field_name} status={response.status_code} body_snippet={snippet}")
                         last_error = response_data or {"status_code": response.status_code}
                         continue
                 except requests.exceptions.HTTPError as http_err:
@@ -199,23 +280,110 @@ class Unifi:
                     return None
 
         if last_error:
-            if last_error.get("meta", {}).get("msg") == "api.err.Invalid":
+            error_msg = last_error.get('meta', {}).get('msg')
+            
+            # Check for authentication rate limiting
+            if error_msg == "authentication_failed_limit_reached":
+                logger.error("UniFi controller authentication rate limit reached!")
+                logger.error("Please wait 5-10 minutes before trying again.")
+                raise Exception("AUTHENTICATION_FAILED_LIMIT_REACHED: UniFi controller rate limit. Please wait before retrying.")
+            
+            if error_msg == "api.err.Invalid":
                 logger.error(f'Login failed, invalid credentials.')
                 return None
-            logger.error(f"Login failed: {last_error.get('meta', {}).get('msg')}")
-            raise Exception("Login failed.")
+            
+            # Track failed authentication attempts across calls
+            if self.base_url not in self._failed_auth_count:
+                self._failed_auth_count[self.base_url] = 0
+            
+            self._failed_auth_count[self.base_url] += 1
+            
+            # If we're getting repeated login failures with no specific error, it might be rate limiting
+            if error_msg is None:
+                if self._failed_auth_count[self.base_url] == 1:
+                    logger.error(f"Login failed (attempt {self._failed_auth_count[self.base_url]})")
+                else:
+                    logger.error(f"Login failed - detecting rate limit pattern (attempt {self._failed_auth_count[self.base_url]})")
+                # Debug: Show the actual response structure
+                logger.debug(f"Full error response: {last_error}")
+                if self._failed_auth_count[self.base_url] >= 2:  # After 2+ attempts with no specific error - likely rate limiting
+                    logger.error("UniFi controller rate limit detected!")
+                    logger.error("Please wait 5-10 minutes before trying again.")
+                    raise Exception("AUTHENTICATION_FAILED_LIMIT_REACHED: UniFi controller rate limit. Please wait before retrying.")
+                else:
+                    # First time failure - minimal logging
+                    raise Exception("Login failed.")
+            else:
+                # We have a specific error message - check for rate limiting in multiple formats
+                rate_limit_indicators = [
+                    error_msg,  # meta.msg format
+                    last_error.get("code"),  # Direct code format
+                    last_error.get("message")  # Direct message format
+                ]
+                
+                rate_limit_messages = [
+                    "authentication_failed_limit_reached",
+                    "AUTHENTICATION_FAILED_LIMIT_REACHED",
+                    "rate.limit.exceeded", 
+                    "too.many.requests",
+                    "authentication.limit.reached",
+                    "You've reached the login attempt limit"
+                ]
+                
+                if any(indicator in rate_limit_messages for indicator in rate_limit_indicators if indicator):
+                    logger.error("UniFi controller rate limit detected!")
+                    logger.error("Please wait 5-10 minutes before trying again.")
+                    raise Exception("AUTHENTICATION_FAILED_LIMIT_REACHED: UniFi controller rate limit. Please wait before retrying.")
+                
+                logger.error(f"Login failed: {error_msg}")
+                raise Exception("Login failed.")
 
     def make_request(self, endpoint, method="GET", data=None, params=None, retry_count=0, max_retries=3):
         """Makes an authenticated request to the UniFi API."""
+        
+        
+        # Check if permission error was detected in another thread
+        from .permission_flag import is_permission_error_detected
+        if is_permission_error_detected():
+            raise PermissionError("Permission error detected in another thread - stopping this thread.")
         # if not self.session_cookie or not self.csrf_token:
+        logger.debug(f"Session check - api_key: {bool(self.api_key)}, session_cookie: {bool(self.session_cookie)}, http_session: {bool(self.http_session)}")
         if not self.api_key and not (self.session_cookie or self.http_session):
             logger.info("No valid session. Authenticating...")
             self.authenticate()
+        else:
+            logger.debug("Using existing session")
 
         headers = {
-            # "X-CSRF-Token": self.csrf_token,
             "Content-Type": "application/json"
         }
+        
+        # Add CSRF token if available (required for UniFi 9.5+)
+        if self.http_session:
+            # Try to get CSRF token from cookies first
+            csrf_token = self.http_session.cookies.get("csrf_token") or self.http_session.cookies.get("X-CSRF-Token")
+            if csrf_token:
+                headers["X-CSRF-Token"] = csrf_token
+            elif hasattr(self, 'csrf_token') and self.csrf_token:
+                headers["X-CSRF-Token"] = self.csrf_token
+            else:
+                # Extract CSRF token from JWT TOKEN cookie
+                token_cookie = self.http_session.cookies.get("TOKEN")
+                if token_cookie:
+                    try:
+                        import base64
+                        import json
+                        # Decode JWT payload (middle part)
+                        payload = token_cookie.split('.')[1]
+                        # Add padding if needed
+                        payload += '=' * (4 - len(payload) % 4)
+                        decoded = base64.b64decode(payload)
+                        token_data = json.loads(decoded)
+                        csrf_token = token_data.get('csrfToken')
+                        if csrf_token:
+                            headers["X-CSRF-Token"] = csrf_token
+                    except Exception as e:
+                        logger.debug(f"Failed to extract CSRF token from JWT: {e}")
         if self.api_key:
             headers["X-API-KEY"] = self.api_key
             headers["Accept"] = "application/json"
@@ -240,34 +408,53 @@ class Unifi:
 
             # Handle session expiry
             if response.status_code == 401:
-                response_data = response.json()
-                if response_data.get('meta', {}).get('rc') == 'error':
-                    if response_data.get('meta', {}).get('msg') == 'api.err.NoSiteContext':
-                        logger.error(f'No Site Context Povided')
-                        return response_data
-                    elif response_data.get('meta', {}).get('msg') == 'api.err.SessionExpired':
-                        logger.warning("Session expired. Re-authenticating...")
-                        if not self.api_key:
-                            self.authenticate()
-                            return self.make_request(endpoint, method, data, retry_count=0)
-                        return response_data
-                    elif response_data.get('meta', {}).get('msg') == 'api.err.LoginRequired':
-                        if not self.api_key:
-                            self.authenticate()
-                            return self.make_request(endpoint, method, data, retry_count=0)
-                        return response_data
-                    else:
-                        logger.error(f"Request failed with 401: {response_data.get('meta', {}).get('msg')}")
-                        return response_data
+                # Only retry authentication once to avoid rate limiting
+                if retry_count == 0 and not self.api_key:
+                    logger.warning("Session expired or unauthorized. Re-authenticating...")
+                    self.authenticate()
+                    return self.make_request(endpoint, method, data, retry_count=1)
+                else:
+                    logger.error(f"Authentication failed after retry attempt for {url}")
+                    return response.json() if response.content else {}
             elif response.status_code == 400:
                 # Log API errors for debugging
                 response_data = response.json()
                 logger.error(f"Request failed with 400: {response_data.get('meta', {}).get('msg')}")
                 return response_data
+            elif response.status_code == 403:
+                # Log permission issues as warnings, not errors
+                self.permission_error_count += 1
+                logger.warning(f"Permission denied (403) for {url} - admin account lacks write permissions")
+                
+                # If we've seen multiple permission errors, suggest using API key
+                if self.permission_error_count >= 2:
+                    logger.warning("=" * 80)
+                    logger.warning("PERMISSION ISSUE DETECTED")
+                    logger.warning("Your admin account can read data but cannot modify configuration.")
+                    logger.warning("SOLUTIONS:")
+                    logger.warning("1. Ensure admin account has 'Device Configuration' permissions")
+                    logger.warning("2. Or use API key authentication with Full Admin access")
+                    logger.warning("=" * 80)
+                    
+                    # Set the global permission error flag
+                    from .permission_flag import set_permission_error
+                    set_permission_error()
+                    
+                    # Call the permission callback if provided
+                    if self.permission_callback:
+                        self.permission_callback()
+                    
+                    raise PermissionError("Admin account lacks write permissions. See logged solutions above.")
+                
+                return None
 
             response.raise_for_status()
             try:
-                return response.json()
+                response_data = response.json()
+                if "networkconf" in endpoint:
+                    logger.debug(f"API RESPONSE - Status: {response.status_code}")
+                    logger.debug(f"RESPONSE DATA: {response_data}")
+                return response_data
             except json.JSONDecodeError as json_err:
                 # Log snippet of non-JSON response for debugging
                 snippet = response.text[:200] if hasattr(response, 'text') else ''

@@ -67,7 +67,6 @@ SITES_ENDPOINTS = {
         (APIVersion.PROXY_INTEGRATION, '/proxy/network/integration/v1/sites'),
     ],
     AuthMethod.SESSION: [
-        (APIVersion.PROXY_V2, '/proxy/network/v2/api/site'),
         (APIVersion.PROXY_REST, '/proxy/network/api/self/sites'),
         (APIVersion.LEGACY_REST, '/api/self/sites'),
     ],

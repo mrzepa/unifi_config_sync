@@ -178,7 +178,16 @@ def add_item_to_site(unifi, site_name: str, context: dict):
                             f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
                         )
                         continue
-                    response = ui_site.network_conf.update(new_item, item_id)
+                    
+                    # Check if this is UniFi 9.5+ (has http_session attribute)
+                    if hasattr(ui_site.unifi, 'http_session') and ui_site.unifi.http_session:
+                        # UniFi 9.5+: include the _id in the data instead of as a path parameter
+                        new_item_with_id = dict(new_item)  # Make a copy
+                        new_item_with_id['_id'] = item_id
+                        response = ui_site.network_conf.update(new_item_with_id)  # Don't pass item_id as path
+                    else:
+                        # Legacy UniFi: pass item_id as path parameter
+                        response = ui_site.network_conf.update(new_item, item_id)
 
                 # Case 2: VLAN and names match – log a debug message and skip
                 elif existing_name == item_name:

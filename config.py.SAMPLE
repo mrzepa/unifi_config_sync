@@ -6,6 +6,22 @@ CONTROLLERS = [
      'https://192.168.1.1:8443',
      'https://192.168.1.2:8443'
 ]
+
+# Skip API key authentication attempts
+# Set to True if you want to use only username/password/MFA authentication
+# This will skip all API key login attempts and go directly to session-based auth
+SKIP_API_KEY_AUTH = False
+
+# Per-controller API key environment variable mappings
+# Format: {controller_url: 'ENVIRONMENT_VARIABLE_NAME'}
+# Each controller will use its own environment variable for the API key
+# Username/password/MFA are global (same across all controllers)
+# NOTE: This is ignored if SKIP_API_KEY_AUTH is True
+CONTROLLER_API_KEYS = {
+    'https://192.168.1.1:8443': 'UI_API_KEY_CONTROLLER_1',
+    'https://192.168.1.2:8443': 'UI_API_KEY_CONTROLLER_2',
+    # Add more controllers as needed
+}
 # directories
 INPUT_DIR = 'input'
 BACKUP_DIR = 'backups'

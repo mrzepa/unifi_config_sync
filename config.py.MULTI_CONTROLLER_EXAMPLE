@@ -1,0 +1,58 @@
+# Multi-Controller Configuration Example
+# Copy this to config.py and customize for your environment
+
+import os
+
+# List of controllers
+CONTROLLERS = [
+    'https://10.140.10.57:11443',  # Your primary controller
+    'https://unifi-controller2.example.com:8443',  # Additional controller
+    'https://unifi-controller3.example.com:8443',  # Additional controller
+]
+
+# Map each controller to its own environment variable
+CONTROLLER_API_KEYS = {
+    'https://10.140.10.57:11443': 'UI_API_KEY_CONTROLLER_1',
+    'https://unifi-controller2.example.com:8443': 'UI_API_KEY_CONTROLLER_2',
+    'https://unifi-controller3.example.com:8443': 'UI_API_KEY_CONTROLLER_3',
+}
+
+# Global authentication (same username/password/MFA for all controllers)
+# Set these in environment variables:
+# export UI_USERNAME="admin"
+# export UI_PASSWORD="password"
+# export UI_MFA_SECRET="your-mfa-secret"
+
+# Per-controller API keys (set in environment, never hardcode)
+# export UI_API_KEY_CONTROLLER_1="your-api-key-for-controller-1"
+# export UI_API_KEY_CONTROLLER_2="your-api-key-for-controller-2"
+# export UI_API_KEY_CONTROLLER_3="your-api-key-for-controller-3"
+
+# directories
+INPUT_DIR = 'input'
+BACKUP_DIR = 'backups'
+SITE_DATA_DIR = 'site_data'
+SITE_DATA_FILE = 'site_data.json'
+BASE_SITE_DATA_FILE = 'base_site_data.json'
+os.makedirs(INPUT_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(SITE_DATA_DIR, exist_ok=True)
+
+if len(CONTROLLERS) == 0:
+    raise ValueError(f'At least one controller must be specified in config.py.')
+
+# Threading limits
+MAX_THREADS = 8
+MAX_CONTROLLER_THREADS = min(len(CONTROLLERS), MAX_THREADS // 2)
+if MAX_CONTROLLER_THREADS <= 0:
+    raise ValueError("MAX_CONTROLLER_THREADS must be at least 1.")
+
+MAX_SITE_THREADS = (MAX_THREADS - MAX_CONTROLLER_THREADS) // len(CONTROLLERS)
+if MAX_SITE_THREADS <= 0:
+    raise ValueError("MAX_SITE_THREADS must be at least 1.")
+
+# Radius server names
+RADIUS_SERVERS = {
+    '10.1.1.2': 'abc123',
+    '10.2.2.4': '123abc'
+}

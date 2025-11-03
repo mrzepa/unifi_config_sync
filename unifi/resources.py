@@ -191,17 +191,66 @@ class BaseResource:
         response = {}
         for url, api_version in candidates:
             logger.debug(f"Trying {self.endpoint} create endpoint: {url} (API version: {api_version})")
-            response = self.unifi.make_request(url, 'POST', data=data)
-            if response:
+            # Check if this is UniFi 9.5+ and filter fields accordingly
+            create_data = data
+            if hasattr(self.unifi, 'http_session') and self.unifi.http_session:
+                # UniFi 9.5+ uses session-based auth - filter to browser-like fields
+                if self.endpoint == 'networkconf':
+                    essential_fields = [
+                        'vlan_enabled', 'purpose', 'name', 'vlan', 
+                        'enabled', 'is_nat', 'igmp_snooping', 'dhcpguard_enabled', 
+                        'network_isolation_enabled', 'ip_subnet', 'dhcpd_enabled', 
+                        'dhcpd_start', 'dhcpd_stop', 'domain_name', 'mdns_enabled'
+                    ]
+                    filtered_data = {}
+                    for key, value in data.items():
+                        # Only include essential fields that the browser sends
+                        if key in essential_fields:
+                            filtered_data[key] = value
+                    create_data = filtered_data
+            
+            resp_try = self.unifi.make_request(url, 'POST', data=create_data)
+            if resp_try is not None:
+                response = resp_try
                 logger.debug(f"Successfully created {self.endpoint} using {api_version}")
                 break
+            else:
+                logger.debug(f"API returned None response for {url}")
+        
+        if response is None:
+            logger.warning(f"Unable to create {self.endpoint}: Admin account lacks write permissions")
+            return {}
+        
+        # Debug: Log the actual response structure
+        logger.debug(f"Create response type: {type(response)}")
+        logger.debug(f"Create response content: {response}")
+        
+        if not isinstance(response, dict):
+            logger.error(f"Failed to create {self.endpoint}: Unexpected response type {type(response)} - Response: {response}")
+            return {}
+        
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully created {self.endpoint} at site '{self.site.desc}'")
             return response.get('data', {})
         else:
-            return response.get('meta', {})
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            error_rc = meta.get('rc', 'Unknown rc')
+            
+            # Handle specific error cases with friendly messages
+            if error_msg == 'api.err.TooManyWirelessNetwork':
+                device_mac = meta.get('device_mac', 'Unknown')
+                wlan_count = meta.get('wlan_count', 'Unknown')
+                max_wlan = meta.get('max_wlan', 'Unknown')
+                logger.error(f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan} networks).")
+                return {'meta': {'rc': 'error', 'msg': 'api.err.TooManyWirelessNetwork'}}
+            else:
+                logger.error(f"Failed to create {self.endpoint}: rc={error_rc}, msg={error_msg}")
+                logger.error(f"Full response: {response}")
+                return response.get('meta', {})
 
-    def update(self, data: dict = None, path: str = None):
+    def update(self, data: dict, path: str = None):
+        """Updates an existing item on the UniFi Controller."""
         site_name = self.site.name
         site_id = getattr(self.site, '_id', None)
         site_tokens = [t for t in [site_name, site_id] if t]
@@ -212,32 +261,110 @@ class BaseResource:
         
         # Build URLs for update (add path or _id to endpoint)
         base_endpoint = self.endpoint
+        logger.debug(f"Base endpoint: {base_endpoint}")
+        logger.debug(f"Data _id: {data.get('_id')}")
+        logger.debug(f"Self _id: {self._id}")
+        logger.debug(f"Path parameter: {path}")
+        
+        # For UniFi 9.5+, networkconf still needs ID in URL path despite session auth
+        is_unifi_95_plus = hasattr(self.unifi, 'http_session') and self.unifi.http_session
+        
+        # Store the ID for later URL construction
+        item_id = None
         if path:
-            self.endpoint = f"{base_endpoint}/{path}"
+            item_id = path
+        elif data.get('_id'):
+            item_id = data.get('_id')
         elif self._id:
-            self.endpoint = f"{base_endpoint}/{self._id}"
+            item_id = self._id
+        
+        if not item_id:
+            raise ValueError(f"No ID found in data or object for updating {base_endpoint}")
+        
+        # Always use base endpoint for registry lookup
+        self.endpoint = base_endpoint
+        logger.debug(f"Base endpoint for registry lookup: {self.endpoint}")
         
         # Use endpoint registry to get candidate URLs
         candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
         
+        # Append ID to candidate URLs if needed
+        if base_endpoint == 'networkconf' or not is_unifi_95_plus:
+            # For networkconf (all versions) and legacy endpoints, append ID to URL
+            candidates = [(f"{url}/{item_id}", api_version) for url, api_version in candidates]
+        
+        logger.debug(f"Final candidates after ID processing: {candidates}")
+        
         response = {}
         for url, api_version in candidates:
             logger.debug(f"Trying {base_endpoint} update endpoint: {url} (API version: {api_version})")
-            resp_try = self.unifi.make_request(url, 'PUT', data=data)
-            if resp_try:
+            # Check if this is UniFi 9.5+ and filter fields accordingly
+            update_data = data
+            if hasattr(self.unifi, 'http_session') and self.unifi.http_session:
+                # UniFi 9.5+ uses session-based auth - filter to browser-like fields
+                if base_endpoint == 'networkconf':
+
+                    # Ensure _id is in data for networkconf updates
+                    if '_id' not in data:
+                        data = dict(data)  # Make a copy
+                        if path:
+                            data['_id'] = path
+                        elif hasattr(self, '_id') and self._id:
+                            data['_id'] = self._id
+                    
+                    essential_fields = [
+                        'vlan_enabled', 'purpose', '_id', 'site_id', 'name', 'vlan', 
+                        'enabled', 'is_nat', 'igmp_snooping', 'dhcpguard_enabled', 
+                        'network_isolation_enabled', 'ip_subnet', 'dhcpd_enabled', 
+                        'dhcpd_start', 'dhcpd_stop', 'domain_name', 'mdns_enabled'
+                    ]
+                    filtered_data = {}
+                    for key, value in data.items():
+                        # Only include essential fields that the browser sends
+                        if key in essential_fields:
+                            filtered_data[key] = value
+                    update_data = filtered_data
+                    
+            logger.debug(f"Update data being sent: {update_data}")
+            
+            resp_try = self.unifi.make_request(url, 'PUT', data=update_data)
+            logger.debug(f"Raw response from API: {resp_try}")
+            if resp_try is not None:
                 response = resp_try
                 logger.debug(f"Successfully updated {base_endpoint} using {api_version}")
                 break
+            else:
+                logger.debug(f"API returned None response for {url}")
         
         # Restore original endpoint
         self.endpoint = base_endpoint
+        
+        if response is None:
+            logger.warning(f"Unable to update {base_endpoint}: Admin account lacks write permissions")
+            return None
+        
+        # Debug: Log the actual response structure
+        logger.debug(f"Update response type: {type(response)}")
+        logger.debug(f"Update response content: {response}")
+        
+        if not isinstance(response, dict):
+            actual_id = data.get('_id') or self._id or path
+            logger.error(f"Failed to update {base_endpoint} with ID {actual_id}: Unexpected response type {type(response)} - Response: {response}")
+            return None
+        
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{self.site.desc}'")
+            actual_id = data.get('_id') or self._id or path
+            logger.info(f"Successfully updated {base_endpoint} with ID {actual_id} at site '{self.site.desc}'")
             return response.get('data', {})
         else:
-            logger.error(f"Failed to update {self.endpoint} with ID {self._id}: {response}")
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            error_rc = meta.get('rc', 'Unknown rc')
+            actual_id = data.get('_id') or self._id or path
+            logger.error(f"Failed to update {base_endpoint} with ID {actual_id}: rc={error_rc}, msg={error_msg}")
+            logger.error(f"Full response: {response}")
             return None
-
+        
     def delete(self, item_id: int = None):
         """
         Delete an item from a specific endpoint using its ID. This method sends a DELETE request
@@ -262,10 +389,10 @@ class BaseResource:
         
         # Build URLs for delete (add item_id to endpoint)
         base_endpoint = self.endpoint
-        self.endpoint = f"{base_endpoint}/{item_id}"
         
-        # Use endpoint registry to get candidate URLs
-        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        # Use endpoint registry to get base URLs, then add item_id
+        base_candidates = get_resource_candidate_urls(base_endpoint, site_tokens)
+        candidates = [(f"{url}/{item_id}", api_version) for url, api_version in base_candidates]
         
         response = {}
         for url, api_version in candidates:
@@ -276,13 +403,31 @@ class BaseResource:
                 logger.debug(f"Successfully deleted {base_endpoint} using {api_version}")
                 break
         
-        # Restore original endpoint
-        self.endpoint = base_endpoint
+        if response is None:
+            logger.warning(f"Unable to delete {base_endpoint}: Admin account lacks write permissions")
+            return False
+        
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully deleted {self.endpoint} with ID {item_id} at site '{site_name}'")
+            logger.info(f"Successfully deleted {base_endpoint} with ID {item_id} at site '{site_name}'")
             return True
         else:
-            logger.error(f"Failed to delete {self.endpoint} with ID {item_id} at site {site_name}: {response}")
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            
+            # Handle specific error cases with friendly messages
+            if error_msg == 'api.err.NoDelete' and self.endpoint == 'radiusprofile':
+                # Check if this is the Default radius profile by looking it up
+                try:
+                    # Try to get the item name to check if it's Default
+                    existing_items = self.all()
+                    for item in existing_items:
+                        if item.get('_id') == item_id and item.get('name', '').lower() == 'default':
+                            logger.info(f'Cannot delete "Default" radius profile. This is expected, ignoring error message.')
+                            return False
+                except:
+                    pass  # If we can't check, fall through to normal error handling
+            
+            logger.error(f"Failed to delete {base_endpoint} with ID {item_id} at site {site_name}: {error_msg}")
             return False
 
     def backup(self, backup_dir: str):

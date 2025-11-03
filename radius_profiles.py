@@ -159,12 +159,24 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
 
-            # Add in the radius server secret
-            for idx, server in enumerate(new_item.get('auth_servers', [])):
-                ip = server.get('ip')
-                if ip in RADIUS_SERVERS:
-                    # Update 'x_secret' in the current server dictionary
-                    new_item['auth_servers'][idx]['x_secret'] = RADIUS_SERVERS[ip]
+            # Add in the radius server secret and ensure IP addresses are present
+            auth_servers = new_item.get('auth_servers', [])
+            
+            # Skip any profile if it has no auth_servers or incomplete auth_servers (missing IP)
+            if not auth_servers:
+                logger.info(f"Skipping radius profile '{item_name}' - no auth servers defined (profile not in use)")
+                continue
+            
+            # Check if auth_servers are complete (have required fields like IP)
+            has_complete_servers = False
+            for server in auth_servers:
+                if server.get('ip'):  # Server has an IP address, so it's complete
+                    has_complete_servers = True
+                    break
+            
+            if not has_complete_servers:
+                logger.info(f"Skipping radius profile '{item_name}' - auth servers incomplete (missing IP addresses)")
+                continue
 
             # Check if the item name already exists
             if item_name in existing_item_names:
@@ -175,6 +187,34 @@ def add_item_to_site(unifi, site_name: str, context: dict):
                     item_to_backup = ui_site.radius_profile.get(_id=item_id)
                     item_to_backup.backup(config.BACKUP_DIR)
                     delete_response = ui_site.radius_profile.delete(item_id)
+
+            # Process auth_servers (add IPs and secrets)
+            updated_auth_servers = []
+            
+            for idx, server in enumerate(auth_servers):
+                ip = server.get('ip')
+                if ip and ip in RADIUS_SERVERS:
+                    # Update 'x_secret' for existing IP
+                    server['x_secret'] = RADIUS_SERVERS[ip]
+                    updated_auth_servers.append(server)
+                elif not ip:
+                    # Server has no IP address - add one from RADIUS_SERVERS
+                    if RADIUS_SERVERS:
+                        # Use the first available RADIUS server
+                        first_ip = list(RADIUS_SERVERS.keys())[0]
+                        server['ip'] = first_ip
+                        server['x_secret'] = RADIUS_SERVERS[first_ip]
+                        updated_auth_servers.append(server)
+                        logger.info(f"Added missing IP address {first_ip} to radius server in profile '{item_name}'")
+                    else:
+                        logger.warning(f"No RADIUS servers configured in config.py for profile '{item_name}'. Skipping server entry.")
+                else:
+                    # IP exists but not in RADIUS_SERVERS - keep as is but warn
+                    logger.warning(f"RADIUS server IP {ip} not found in RADIUS_SERVERS config for profile '{item_name}'. Using existing configuration.")
+                    updated_auth_servers.append(server)
+            
+            # Update the auth_servers in the new_item
+            new_item['auth_servers'] = updated_auth_servers
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
@@ -237,6 +277,25 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
 
+            # Add in the radius server secret and ensure IP addresses are present
+            auth_servers = new_item.get('auth_servers', [])
+            
+            # Skip any profile if it has no auth_servers or incomplete auth_servers (missing IP)
+            if not auth_servers:
+                logger.info(f"Skipping radius profile '{item_name}' - no auth servers defined (profile not in use)")
+                continue
+            
+            # Check if auth_servers are complete (have required fields like IP)
+            has_complete_servers = False
+            for server in auth_servers:
+                if server.get('ip'):  # Server has an IP address, so it's complete
+                    has_complete_servers = True
+                    break
+            
+            if not has_complete_servers:
+                logger.info(f"Skipping radius profile '{item_name}' - auth servers incomplete (missing IP addresses)")
+                continue
+
             # Check if the profile name exists and delete it using its _id
             if item_name in existing_item_map:
                 item_to_delete = existing_item_map[item_name]
@@ -250,6 +309,34 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                 else:
                     logger.error(f"Vlan '{item_name}' exists but its '_id' is missing. Skipping delete.")
                     continue
+
+            # Process auth_servers (add IPs and secrets)
+            updated_auth_servers = []
+            
+            for idx, server in enumerate(auth_servers):
+                ip = server.get('ip')
+                if ip and ip in RADIUS_SERVERS:
+                    # Update 'x_secret' for existing IP
+                    server['x_secret'] = RADIUS_SERVERS[ip]
+                    updated_auth_servers.append(server)
+                elif not ip:
+                    # Server has no IP address - add one from RADIUS_SERVERS
+                    if RADIUS_SERVERS:
+                        # Use the first available RADIUS server
+                        first_ip = list(RADIUS_SERVERS.keys())[0]
+                        server['ip'] = first_ip
+                        server['x_secret'] = RADIUS_SERVERS[first_ip]
+                        updated_auth_servers.append(server)
+                        logger.info(f"Added missing IP address {first_ip} to radius server in profile '{item_name}'")
+                    else:
+                        logger.warning(f"No RADIUS servers configured in config.py for profile '{item_name}'. Skipping server entry.")
+                else:
+                    # IP exists but not in RADIUS_SERVERS - keep as is but warn
+                    logger.warning(f"RADIUS server IP {ip} not found in RADIUS_SERVERS config for profile '{item_name}'. Using existing configuration.")
+                    updated_auth_servers.append(server)
+            
+            # Update the auth_servers in the new_item
+            new_item['auth_servers'] = updated_auth_servers
             # Make the request to add the item config
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.radius_profile.create(new_item)

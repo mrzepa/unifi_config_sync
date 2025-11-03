@@ -250,16 +250,42 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             # Add ap_group_ids if the corresponding names exist
             ap_group_names = new_item.get("ap_group_ids_name", [])
             if ap_group_names:
-                ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                ap_group_ids = []
+                for name in ap_group_names:
+                    if name in ap_groups:
+                        ap_group_ids.append(ap_groups[name])
+                    else:
+                        logger.warning(f"AP group '{name}' not found in target site '{site_name}'. Using default AP group.")
+                
                 if ap_group_ids:  # Only add if there are valid IDs
                     new_item["ap_group_ids"] = ap_group_ids
+                else:
+                    # Use the first available AP group as default
+                    if ap_groups:
+                        default_ap_group_id = list(ap_groups.values())[0]
+                        default_ap_group_name = list(ap_groups.keys())[0]
+                        new_item["ap_group_ids"] = [default_ap_group_id]
+                        logger.info(f"Using default AP group '{default_ap_group_name}' for WLAN '{item_name}' in site '{site_name}'.")
+                    else:
+                        # Remove AP group fields only if no AP groups exist at all
+                        new_item.pop("ap_group_ids", None)
+                        new_item.pop("ap_group_ids_name", None)
+                        logger.warning(f"No AP groups available in site '{site_name}'. WLAN '{item_name}' will be created without AP group restrictions.")
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
             response = ui_site.wlan_conf.create(new_item)
             if isinstance(response, dict):
                 if response.get('rc') == 'error':
-                    logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {response.get("msg")}')
+                    error_msg = response.get("msg")
+                    if error_msg == 'api.err.TooManyWirelessNetwork':
+                        # Extract device info from the response for friendly message
+                        device_mac = response.get('device_mac', 'Unknown')
+                        wlan_count = response.get('wlan_count', 'Unknown')
+                        max_wlan = response.get('max_wlan', 'Unknown')
+                        logger.error(f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan} networks). Cannot create WLAN '{item_name}'.")
+                    else:
+                        logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {error_msg}')
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -361,9 +387,27 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                 # Add ap_group_ids if the corresponding names exist
                 ap_group_names = new_item.get("ap_group_ids_name", [])
                 if ap_group_names:
-                    ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                    ap_group_ids = []
+                    for name in ap_group_names:
+                        if name in ap_groups:
+                            ap_group_ids.append(ap_groups[name])
+                        else:
+                            logger.warning(f"AP group '{name}' not found in target site '{site_name}'. Using default AP group.")
+                    
                     if ap_group_ids:  # Only add if there are valid IDs
                         new_item["ap_group_ids"] = ap_group_ids
+                    else:
+                        # Use the first available AP group as default
+                        if ap_groups:
+                            default_ap_group_id = list(ap_groups.values())[0]
+                            default_ap_group_name = list(ap_groups.keys())[0]
+                            new_item["ap_group_ids"] = [default_ap_group_id]
+                            logger.info(f"Using default AP group '{default_ap_group_name}' for WLAN '{item_name}' in site '{site_name}'.")
+                        else:
+                            # Remove AP group fields only if no AP groups exist at all
+                            new_item.pop("ap_group_ids", None)
+                            new_item.pop("ap_group_ids_name", None)
+                            logger.warning(f"No AP groups available in site '{site_name}'. WLAN '{item_name}' will be created without AP group restrictions.")
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")

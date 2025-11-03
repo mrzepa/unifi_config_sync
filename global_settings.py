@@ -159,28 +159,58 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to update the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            # For UniFi 9.5+, global settings use a different endpoint pattern
-            # We need to make a direct POST request to /set/setting/{key}
             
-            # Get the site name (not ID) for the request - this matches the browser request
-            site_name_for_request = ui_site.name
+            # Check if this is UniFi 9.5+ (has http_session attribute)
+            is_unifi_95_plus = hasattr(unifi, 'http_session') and unifi.http_session
             
-            # Build the correct endpoint URL (base_url already includes the full URL)
-            url = f"{unifi.base_url}/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}"
-            
-            logger.debug(f"Making POST request to: {url}")
-            logger.debug(f"Data being sent: {new_items}")
-            
-            # Make the direct POST request
-            response = unifi.make_request(f"/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}", method="POST", data=new_items)
-            
-            if response and response.get('meta', {}).get('rc') == 'ok':
-                logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+            if is_unifi_95_plus:
+                # UniFi 9.5+ uses /set/setting/{key} endpoint pattern
+                logger.debug("Using UniFi 9.5+ global settings endpoint pattern")
+                
+                # Get the site name (not ID) for the request - this matches the browser request
+                site_name_for_request = ui_site.name
+                
+                # Build the correct endpoint URL
+                url = f"{unifi.base_url}/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}"
+                
+                logger.debug(f"Making POST request to: {url}")
+                logger.debug(f"Data being sent: {new_items}")
+                
+                # Make the direct POST request
+                response = unifi.make_request(f"/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}", method="POST", data=new_items)
+                
+                if response and response.get('meta', {}).get('rc') == 'ok':
+                    logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                else:
+                    error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
+                    logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
+                    if response:
+                        logger.error(f"Full response: {response}")
             else:
-                error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
-                logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
-                if response:
-                    logger.error(f"Full response: {response}")
+                # Older UniFi versions use standard setting endpoint with PUT request
+                logger.debug("Using legacy UniFi global settings endpoint pattern")
+                
+                # Use the standard update method for older versions
+                # The item_id was found earlier in the function
+                for item in existing_items:
+                    if item.get("key") == item_name:
+                        item_id = item.get("_id")
+                        break
+                else:
+                    logger.error(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
+                    raise ValueError(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
+                
+                # Use standard update method with item_id
+                path = f"{item_id}"
+                response = ui_site.setting.update(data=new_items, path=path)
+                
+                if response and response.get('meta', {}).get('rc') == 'ok':
+                    logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                else:
+                    error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
+                    logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
+                    if response:
+                        logger.error(f"Full response: {response}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

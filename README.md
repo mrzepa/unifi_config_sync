@@ -315,6 +315,122 @@ unifi_site_sync/
 
 ---
 
+## 📜 **Scripts Overview**
+
+### **🚀 Main Scripts**
+
+#### **`run.py`** - Main Entry Point
+- **Purpose**: Central orchestrator for all configuration operations
+- **Usage**: `python3 run.py --add|--replace|--delete|--get [options]`
+- **Features**: 
+  - Processes all configuration modules in dependency order
+  - Multi-controller and multi-site support
+  - Dry-run mode for previewing changes
+  - Colored summary reports
+  - Automatic backup creation
+
+#### **`manual_backup.py`** - Manual Backup Utility
+- **Purpose**: Create on-demand backups of specific configurations
+- **Usage**: `python3 manual_backup.py --config-type network_conf --site-name "Main Office"`
+- **Features**:
+  - Backup specific configuration types
+  - Target specific sites or all sites
+  - Manual backup naming and organization
+  - Integration with rollback system
+
+#### **`rollback.py`** - Rollback Management CLI
+- **Purpose**: Manage configuration backups and perform rollbacks
+- **Usage**: `python3 rollback.py list|info|rollback|delete|cleanup [options]`
+- **Features**:
+  - List available backups
+  - View backup details
+  - Perform rollbacks (with dry-run support)
+  - Delete old backups
+  - Clean up backups older than specified days
+
+### **🔧 Configuration Module Scripts**
+
+#### **`network_conf.py`** - Network/VLAN Management
+- **Purpose**: Manage network configurations and VLANs
+- **Features**: VLAN validation, UniFi 9.5+ compatibility, dependency checking
+- **Operations**: Add, replace, delete network configurations
+
+#### **`wlan_conf.py`** - Wireless Network Management  
+- **Purpose**: Manage WLAN (wireless network) configurations
+- **Features**: AP group handling, automatic fallback, dependency validation
+- **Operations**: Add, replace, delete wireless networks
+
+#### **`radius_profiles.py`** - RADIUS Authentication Management
+- **Purpose**: Manage RADIUS authentication profiles
+- **Features**: Automatic IP/secret management, incomplete profile detection
+- **Operations**: Add, replace, delete RADIUS profiles
+
+#### **`port_profiles.py`** - Switch Port Profile Management
+- **Purpose**: Manage switch port configuration profiles
+- **Features**: VLAN reference resolution, profile validation
+- **Operations**: Add, replace, delete port profiles
+
+#### **`global_settings.py`** - Global Settings Management
+- **Purpose**: Manage global switch settings
+- **Features**: UniFi version detection, special endpoint handling
+- **Operations**: Replace global settings (add not supported)
+
+### **🛠️ Utility Scripts**
+
+#### **`backup_ports.py`** - Port Configuration Backup
+- **Purpose**: Backup device port configurations
+- **Features**: Automatic port discovery, configuration export
+- **Usage**: Runs automatically before changes or standalone
+
+#### **`vlan_report.py`** - VLAN Analysis and Reporting
+- **Purpose**: Generate VLAN comparison reports across sites
+- **Features**: Cross-site VLAN analysis, CSV export
+- **Usage**: VLAN auditing and compliance reporting
+
+#### **`vlan_dump.py`** - VLAN Information Export
+- **Purpose**: Simple VLAN information export utility
+- **Features**: Quick VLAN listing and export
+- **Usage**: Fast VLAN discovery and documentation
+
+### **⚙️ Core System Components**
+
+#### **`summary_manager.py`** - Summary Reporting Engine
+- **Purpose**: Generate colored operation summary reports
+- **Features**: Cross-platform color support, operation tracking
+- **Integration**: Used by all scripts for consistent reporting
+
+#### **`rollback_manager.py`** - Backup and Rollback Engine
+- **Purpose**: Core backup creation and restoration functionality
+- **Features**: JSON-based backups, metadata tracking
+- **Integration**: Used by manual_backup.py and rollback.py
+
+#### **`config_dependencies.py`** - Dependency Management
+- **Purpose**: Validate configuration dependencies across modules
+- **Features**: Smart dependency checking, deployment ordering
+- **Integration**: Ensures proper configuration deployment sequence
+
+#### **`ap_group_manager.py`** - AP Group Management
+- **Purpose**: Handle UniFi AP group creation and management
+- **Features**: Automatic AP group creation, fallback logic
+- **Integration**: Used by wlan_conf.py for AP group resolution
+
+#### **`utils.py`** - Shared Utilities
+- **Purpose**: Common functions used across all scripts
+- **Features**: VLAN validation, controller processing, helpers
+- **Integration**: Core utility library for the entire project
+
+### **📁 Configuration Files**
+
+#### **`config.py`** - Main Configuration
+- **Purpose**: Controller URLs, site names, and operational settings
+- **Setup**: Copy from `config.py.SAMPLE` and customize
+
+#### **`requirements.txt`** - Python Dependencies
+- **Purpose**: Required Python packages for the project
+- **Installation**: `pip install -r requirements.txt`
+
+---
+
 ## 🎯 **Use Cases**
 
 ### **Enterprise Network Management**

@@ -162,7 +162,7 @@ if __name__ == "__main__":
     if 'Default' in template_vlans:
         template_vlans.remove('Default')
 
-    process_fucntion = vlan_report
+    process_function = vlan_report
     report = {}
     # go through each controller
     for controller in controller_list:

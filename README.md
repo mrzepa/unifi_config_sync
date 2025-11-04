@@ -1,28 +1,37 @@
 # UniFi Configuration Sync Manager
 
 This project is designed to manage common configuration bits on UniFi network controllers. It reads configurations from a directory, compares them to existing configurations on the UniFi site to keep them in sync.
+
 ## Features
-- Fetch existing configurations from a UniFi controller.
-- Add new configurations from a JSON file directory to specified sites.
-- Replace configurations from a JSON file directory to specified sites.
-- Deletes configurations from specified sites.
-- Support multiple UniFi controllers and sites handled concurrently for performance.
+- Fetch existing configurations from a UniFi controller
+- Add new configurations from a JSON file directory to specified sites
+- Replace configurations from a JSON file directory to specified sites
+- Delete configurations from specified sites
+- Support multiple UniFi controllers and sites handled concurrently for performance
+- **UniFi 9.5+ compatibility** with modern authentication and API endpoints
+- **Automatic session management** with retry logic for expired sessions
+- **Enhanced error handling** for common UniFi API errors
+- **Backward compatibility** with older UniFi versions
 
 ---
+
 ### Currently Supported Configs to Sync
-- Networks (vlans)
-- Port Profiles
-- Radius Profiles
-- WLANs
-- Global Settings for `global_switch`
+- **Networks (VLANs)** - Network configuration with VLAN support
+- **Port Profiles** - Switch port configuration profiles
+- **RADIUS Profiles** - Authentication profiles with automatic IP/secret management
+- **WLANs** - Wireless network configurations with AP group handling
+- **Global Settings** - Global switch settings (UniFi 9.5+ and legacy support)
 
 ---
+
 ## Requirements
 - Python 3.12+
 - Dependencies:
   - `requests`
   - `pyyaml`
   - `pyotp`
+  - `python-dotenv`
+  - `icecream`
 
 ---
 
@@ -100,11 +109,15 @@ The `config.py` file contains configuration data for the controllers, base site,
    }
    ```
 * Since the radius server secrets can't be copied from the base site, they need to be supplied here in a dict with the radius server IP address as the key and the secret as the value.
+
 ---
+
 ### Setup The Include Sites list
 - Create a text file, e.g. `sites.txt` and place it in the `input` directory.
 - Add one site name per line.
 - The site name must match the Unifi descriptive name of the site.
+
+---
 
 ### 4. Install Python Dependencies
 Set up a Python virtual environment and install the required dependencies:
@@ -120,45 +133,112 @@ pip install -r requirements.txt    # Install dependencies
 The script provides several options for syncing configuration items across UniFi sites. These include fetching configuration items like port profiles from the base site and applying them to other sites, while also allowing for explicit control over which items to include or exclude.
 
 ### Script Descriptions
-- global_settings.py: This is for syncing Global Settings for the site, at the moment, this only includes the Global Switch settings.
-- network_conf.py: this is for syncing the VLANs for the site.
-- port_profiles.py: This is for syncing the Port Porfiles for the site.
-- radius_profiles.py: This is for syncing the Radius Profiles for the site.
-- wlan_conf.py: This is for syncing the WLANs for the site.
-- run.py: This will execute all the above scripts.
+- **global_settings.py**: Syncs Global Settings for the site, currently supports Global Switch settings with automatic UniFi version detection
+- **network_conf.py**: Syncs the VLANs for the site with UniFi 9.5+ compatibility
+- **port_profiles.py**: Syncs the Port Profiles for the site
+- **radius_profiles.py**: Syncs the Radius Profiles with automatic IP/secret management and incomplete profile detection
+- **wlan_conf.py**: Syncs the WLANs with AP group handling and fallback logic
+- **run.py**: Executes all the above scripts with intelligent module handling
 
 ### General Workflow:
 
-1. **Fetch Items from the Base Site**  
-   Retrieve the port profiles or other configuration items from the site designated as the base site (aka template site):
-   ```bash
-   python3 port_profiles.py --get --base-site-name Default
-   
-   ```
-   Alternatively, if you already have the configuration items in a JSON format, you can directly place them into the directory specified by `endpoint_dir` in the script.
+#### 1. **Fetch Items from the Base Site**  
+Retrieve the port profiles or other configuration items from the site designated as the base site (aka template site):
+```bash
+python3 port_profiles.py --get --base-site-name Default
+```
 
-2. **Sync Items to Target Sites**  
-   Apply the items from the base site to other sites:
-   ```bash
-   python3 port_profiles.py --add
-   ```
+Alternatively, if you already have the configuration items in a JSON format, you can directly place them into the directory specified by `endpoint_dir` in the script.
 
-   To specify a limited number of sites use `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
-3. **Sync All Configs at Once**
-   If you want to apply all configuration changes at the same time:
-   ```bash
-   python3 run.py --add
-   ```
-4. **To backup the device port configuration**
-   ```bash
-   python3 backup_ports.py
-   ```
-   Note, the backup will run automatically as part of the `run.py` script before any changes are made.
+#### 2. **Sync Items to Target Sites**  
+Apply the items from the base site to other sites:
+```bash
+python3 port_profiles.py --add
+```
 
-   To specify a limited number of sites use `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
+To specify a limited number of sites use `--site-names-file sites.txt`. This file includes a list of UniFi site names where the configuration will be applied.
+
+#### 3. **Sync All Configs at Once**
+If you want to apply all configuration changes at the same time:
+```bash
+python3 run.py --add
+```
+
+#### 4. **Process Specific Modules**
+To work with specific configuration types:
+```bash
+# Sync only global settings
+python3 run.py --add --module global_settings --include-names global_switch
+
+# Sync only WLAN configurations
+python3 run.py --add --module wlan_conf --include-names "Corporate WiFi"
+
+# Sync multiple specific modules
+python3 run.py --add --module radius_profiles --include-names "RADIUS Auth"
+```
+
+#### 5. **Backup Device Port Configuration**
+```bash
+python3 backup_ports.py
+```
+Note, the backup will run automatically as part of the `run.py` script before any changes are made.
+
 ---
 
-### Using Include/Exclude Options
+## Advanced Usage Examples
+
+### Global Settings Management
+Global settings require special handling since they don't support "add" operations:
+
+```bash
+# Fetch global switch settings
+python3 global_settings.py --get --base-site-name Default
+
+# Replace global switch settings (works with both -a and -r)
+python3 global_settings.py --replace --include-names global_switch
+
+# Or use run.py (automatically handles global_settings correctly)
+python3 run.py --add --module global_settings --include-names global_switch
+```
+
+### RADIUS Profile Management
+The system automatically handles incomplete RADIUS profiles:
+
+```bash
+# Sync RADIUS profiles (incomplete profiles are automatically skipped)
+python3 run.py --add --module radius_profiles
+
+# The system will:
+# - Skip profiles without auth_servers defined
+# - Skip profiles with incomplete auth_servers (missing IP)
+# - Update secrets for existing IP addresses
+```
+
+### WLAN Configuration with AP Group Handling
+```bash
+# Sync WLAN configurations with automatic AP group fallback
+python3 run.py --add --module wlan_conf --include-names "Corporate WiFi"
+
+# System will:
+# - Map AP group names to IDs automatically
+# - Use default AP group if specified group not found
+# - Handle both UniFi 9.5+ and legacy versions
+```
+
+### Network Configuration (VLANs)
+```bash
+# Sync network configurations
+python3 run.py --add --module network_conf
+
+# System handles:
+# - UniFi 9.5+ field filtering
+# - Automatic ID inclusion for updates
+# - Legacy version compatibility
+```
+
+---
+
+## Using Include/Exclude Options
 
 You can customize the behavior of the script using the `--include-names` or `--exclude-names` options, which allow you to specify the exact configuration items to process by name. 
 
@@ -174,7 +254,7 @@ python3 port_profiles.py --add --exclude-names guest,default
 
 ---
 
-### Using the `--replace` Option
+## Using the `--replace` Option
 
 The `--replace` option ensures that existing configuration items on target sites are replaced with the new data from the base site. This action requires the `--include-names` option to explicitly define the items you want to replace. 
 
@@ -184,12 +264,17 @@ Suppose you want to replace the port profiles named `8021x` and `AdminLAN` on ta
 python3 port_profiles.py --replace --include-names 8021x,AdminLAN
 ```
 
+**Global Settings Example:**
+```bash
+python3 global_settings.py --replace --include-names global_switch
+```
+
 **Why This Is Required:**  
 When using `--replace`, the script avoids unintentional data loss by requiring you to specify exactly which items should be overwritten with `--include-names`. This ensures precision and prevents accidental replacement across all items.
 
 ---
 
-### Using the `--delete` Option
+## Using the `--delete` Option
 
 The `--delete` option allows you to remove specific configuration items from the target sites. As with `--replace`, this feature requires the `--include-names` option so that you can explicitly define which items to delete.
 
@@ -211,42 +296,159 @@ The `--include-names` option ensures you explicitly select which configuration i
 
 ---
 
-### Best Practices
-- 
-- Always use the `--get` option to back up the existing configuration before making changes or deletions.
-- Use `--include-names` and `--exclude-names` to limit the scope of operations, especially when working in production environments.
-- Test the script in a staging environment before applying changes or deletions to live controllers.
-- Ensure the `BACKUP_DIR` is properly configured and the backups are periodically secured to prevent data loss.
+## UniFi Version Compatibility
 
-By following these examples and guidelines, you can confidently manage UniFi configurations, whether you're scaling network setups, restructuring configurations, or cleaning up obsolete profiles.
+This tool supports both **UniFi 9.5+** and **legacy versions** with automatic detection:
+
+### UniFi 9.5+ Features:
+- **Modern Authentication**: Session-based authentication with automatic retry
+- **Enhanced Security**: CSRF token handling and secure session management
+- **Optimized API Calls**: Field filtering for browser-compatible requests
+- **Global Settings Support**: Special endpoint handling for global switch settings
+
+### Legacy Version Support:
+- **Backward Compatibility**: Full support for older UniFi controllers
+- **Automatic Fallback**: Detects legacy versions and uses appropriate endpoints
+- **Consistent Interface**: Same commands work across all versions
+
+### Automatic Version Detection:
+```bash
+# Works on both UniFi 9.5+ and legacy versions
+python3 run.py --add
+```
+
+The tool automatically detects the UniFi version and uses the appropriate API endpoints and authentication methods.
 
 ---
 
-## Troubleshooting
+## Error Handling and Troubleshooting
 
-### Common Issues:
+### Enhanced Error Handling:
+- **Session Expiry**: Automatic re-authentication with retry logic
+- **API Rate Limiting**: Built-in protection against rate limits
+- **Friendly Error Messages**: Clear, actionable error descriptions
+- **Graceful Degradation**: Continues processing other items if one fails
 
-1. **Authentication Issues:**
-   Verify your UniFi credentials and ensure the `.env` file is set correctly.
+### Common Issues and Solutions:
 
-2. **Duplicate Profile Names:**
-   The script automatically avoids uploading profiles with names that already exist on the specified site.
+#### 1. **Authentication Issues**
+```bash
+# Enable debug logging for detailed authentication info
+python3 run.py --add -v
+```
+- Verify your UniFi credentials and ensure the `.env` file is set correctly
+- Check that MFA is properly configured for UniFi 9.5+
 
-3. **UniFi API Errors:**
-   Check the logs (`ERROR` messages) for details such as `400` or invalid payload issues.
-4. **Enable Debug Logging:**
-    ```bash
-   python3 main.py -v --add
-   ```
+#### 2. **Session Expiry**
+- **Automatic Retry**: The tool automatically re-authenticates when sessions expire
+- **Rate Limit Protection**: Only retries once to avoid getting locked out
+
+#### 3. **RADIUS Profile Issues**
+```
+Skipping radius profile 'Default' - auth servers incomplete (missing IP addresses)
+```
+- This is normal behavior for incomplete RADIUS profiles
+- The tool automatically skips profiles that aren't fully configured
+
+#### 4. **AP Group Not Found**
+```
+AP group 'devices_ap_group' not found in target site. Using default AP group.
+```
+- The tool automatically falls back to the default AP group
+- This is a warning, not an error
+
+#### 5. **Global Settings Errors**
+- Use `--replace` instead of `--add` for global settings
+- The tool handles this automatically when using `run.py --add`
+
+#### 6. **Enable Debug Logging**
+```bash
+python3 run.py --add -v
+```
+
+---
+
+## Best Practices
+
+### Before Making Changes:
+- **Always Backup**: Use `--get` to back up existing configurations before making changes
+- **Test in Staging**: Test configurations in a non-production environment first
+- **Use Include/Exclude**: Limit scope with `--include-names` and `--exclude-names` in production
+
+### During Operations:
+- **Monitor Logs**: Use `-v` flag for detailed operation logs
+- **Check Backups**: Ensure `BACKUP_DIR` is properly configured and backed up
+
+### Configuration Management:
+- **Version Control**: Keep your JSON configuration files in version control
+- **Document Changes**: Maintain changelogs for configuration modifications
+- **Regular Backups**: Schedule regular backups of your UniFi configurations
+
+---
+
+## Command Reference
+
+### Basic Commands:
+```bash
+# Fetch configurations
+python3 run.py --get --base-site-name Default
+
+# Add all configurations
+python3 run.py --add
+
+# Replace specific configurations
+python3 run.py --replace --include-names "Profile1,Profile2"
+
+# Delete specific configurations
+python3 run.py --delete --include-names "OldProfile"
+
+# Process specific modules
+python3 run.py --add --module global_settings
+python3 run.py --add --module wlan_conf --include-names "Corporate WiFi"
+```
+
+### Module-Specific Commands:
+```bash
+# Global Settings (requires --include-names)
+python3 global_settings.py --replace --include-names global_switch
+
+# RADIUS Profiles
+python3 radius_profiles.py --add --include-names "Corporate Auth"
+
+# WLAN Configuration
+python3 wlan_conf.py --add --include-names "Guest WiFi"
+
+# Network Configuration
+python3 network_conf.py --add --include-names "VLAN100"
+
+# Port Profiles
+python3 port_profiles.py --add --include-names "802.1X Profile"
+```
+
+### Options:
+- `-v, --verbose`: Enable debug logging
+- `-m, --module`: Process specific module only
+- `--include-names`: Specify specific configuration names to process
+- `--exclude-names`: Exclude specific configuration names
+- `--site-names-file`: File containing list of site names to process
+- `--base-site-name`: Name of the base/template site
 
 ---
 
 ## Logging
+
 The script outputs logs to the console by default. You can add additional file logging or customize log levels by modifying the `setup_logging` function in the code if needed.
+
+### Log Levels:
+- **INFO**: Standard operation information
+- **DEBUG**: Detailed request/response data (use `-v` flag)
+- **WARNING**: Non-critical issues (e.g., AP group not found)
+- **ERROR**: Critical errors that stop operations
 
 ---
 
 ## License
+
 This project is licensed under [MIT License](LICENSE).
 
 Feel free to contribute or raise a GitHub issue for feature requests or bug reports!

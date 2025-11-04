@@ -193,10 +193,10 @@ if __name__ == "__main__":
 
         if args.include_names:
             if not validate_names(args.include_names, valid_names, 'include-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, "Invalid include-names")
         if args.exclude_names:
             if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, "Invalid exclude-names")
 
     if args.replace:
         logging.info(f"Option selected: Replace")
@@ -207,7 +207,7 @@ if __name__ == "__main__":
 
         if not args.include_names:
             logger.error(f"--replace requires a list of names to replace using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "--replace requires a list of names to replace using --include-names.")
 
         if not valid_names:
             raise ValueError(f"Base template directories do not exist. Please run with -g/--get first")
@@ -216,7 +216,7 @@ if __name__ == "__main__":
             # Log the items to be replaced
             logging.info(f"Names to be replaced: {args.include_names}")
         else:
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "Invalid include-names for replacement")
 
     if args.delete:
         logging.info(f"Option selected: Delete")
@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
         if not args.include_names:
             logger.error(f"--delete requires a list of names to delete using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "--delete requires a list of names to delete using --include-names.")
 
         if not valid_names:
             raise ValueError(f"Base template directories do not exist. Please run with -g/--get first")
@@ -242,7 +242,7 @@ if __name__ == "__main__":
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"Names to be deleted: {args.include_names}")
         else:
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "Invalid include-names for deletion")
 
     ui_name_filename = args.site_names_file
     ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)

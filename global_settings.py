@@ -318,7 +318,7 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_name_list = None
 
@@ -328,7 +328,7 @@ if __name__ == "__main__":
             logger.error(f"--get requires a list of {ENDPOINT} keys to get using --include-names. Valid keys are: {valid_keys}")
             sys.exit(1)
 
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
 
         if validate_names(args.include_names, valid_keys, 'include-names'):
             logger.info(f'{ENDPOINT} keys to be retrieved: {args.include_names}')
@@ -356,14 +356,14 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = replace_item_at_site
+        process_function = replace_item_at_site
 
     elif args.delete:
         logger.warning(f'Option: Delete not allowed for {ENDPOINT}.')
         sys.exit(1)
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

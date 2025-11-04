@@ -441,19 +441,19 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_names_list = None
 
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
-        process_fucntion = add_item_to_site
+        process_function = add_item_to_site
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -481,7 +481,7 @@ if __name__ == "__main__":
         else:
             sys.exit(1)
 
-        process_fucntion = replace_items_at_site
+        process_function = replace_items_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
@@ -496,10 +496,10 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = delete_item_from_site
+        process_function = delete_item_from_site
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

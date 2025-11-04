@@ -392,36 +392,36 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_name_list = None
 
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
-        process_fucntion = add_item_to_site
+        process_function = add_item_to_site
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
 
         if args.include_names:
             if not validate_names(args.include_names, valid_names, 'include-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT}")
         if args.exclude_names:
             if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, f"Invalid exclude-names for {ENDPOINT}")
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
 
         if not args.include_names:
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -430,14 +430,14 @@ if __name__ == "__main__":
             # Log the items to be replaced
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
-            raise argparse.ArgumentError
-        process_fucntion = replace_item_at_site
+            raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT} replacement")
+        process_function = replace_item_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
         if not args.include_names:
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -445,11 +445,11 @@ if __name__ == "__main__":
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
-            raise argparse.ArgumentError
-        process_fucntion = delete_item_from_site
+            raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT} deletion")
+        process_function = delete_item_from_site
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

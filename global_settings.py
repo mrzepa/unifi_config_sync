@@ -180,6 +180,13 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
                 
                 if response and response.get('meta', {}).get('rc') == 'ok':
                     logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                    
+                    # Track the update in summary
+                    try:
+                        from summary_manager import log_and_track_updated
+                        log_and_track_updated("Global Settings", item_name, site_name, "replace")
+                    except Exception:
+                        pass  # Don't let summary tracking break the operation
                 else:
                     error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
                     logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
@@ -205,6 +212,13 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
                 
                 if response and response.get('meta', {}).get('rc') == 'ok':
                     logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                    
+                    # Track the update in summary
+                    try:
+                        from summary_manager import log_and_track_updated
+                        log_and_track_updated("Global Settings", item_name, site_name, "replace")
+                    except Exception:
+                        pass  # Don't let summary tracking break the operation
                 else:
                     error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
                     logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")

@@ -242,10 +242,7 @@ class SummaryManager:
                     for item, error in summary.items_failed:
                         report_lines.append(f"    {colors.RED}  - {item}: {error}{colors.RESET}")
                 
-                # VLAN issues
-                if summary.extra_vlans:
-                    report_lines.append(f"  {colors.YELLOW}⚠️  Extra VLANs: {', '.join(sorted(summary.extra_vlans))}{colors.RESET}")
-                
+                # VLAN issues (only show missing VLANs in operations, extra VLANs will be shown separately)
                 if summary.missing_vlans:
                     report_lines.append(f"  {colors.BRIGHT_RED}🚨 Missing VLANs: {', '.join(sorted(summary.missing_vlans))}{colors.RESET}")
                 
@@ -266,6 +263,18 @@ class SummaryManager:
                         report_lines.append(f"    {colors.MAGENTA}  - {backup_id}{colors.RESET}")
                 
                 report_lines.append("")
+        
+        # Informational section for extra VLANs (collect all unique extra VLANs)
+        all_extra_vlans = set()
+        for summary in self.summaries.values():
+            all_extra_vlans.update(summary.extra_vlans)
+        
+        if all_extra_vlans:
+            report_lines.append(f"{colors.BRIGHT_WHITE}NETWORK INFORMATION{colors.RESET}")
+            report_lines.append(f"{colors.CYAN}{'-' * 40}{colors.RESET}")
+            report_lines.append(f"  {colors.YELLOW}⚠️  Extra VLANs detected: {', '.join(sorted(all_extra_vlans))}{colors.RESET}")
+            report_lines.append(f"    {colors.DIM}(VLANs that exist on controller but not in configuration files){colors.RESET}")
+            report_lines.append("")
         
         # Global summary with color coding
         total_created = sum(len(s.items_created) for s in self.summaries.values())

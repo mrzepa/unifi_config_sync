@@ -2,13 +2,10 @@ import os
 import argparse
 import copy
 import logging
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 import warnings
-from icecream import ic
-import argparse
 import config
 import global_settings
 import network_conf

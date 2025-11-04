@@ -150,7 +150,7 @@ def backup_single_controller(controller, context: dict, username: str, password:
     if context['verbose']:
         logger.debug('Sites found on controller:')
         for site in unifi.sites:
-            logger.debug("\x1b[31m%s\x1b[0m",site)
+            logger.debug(f"\x1b[31m{site}\x1b[0m")
 
     if not unifi.sites:
         return None

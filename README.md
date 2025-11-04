@@ -31,7 +31,6 @@ This project is designed to manage common configuration bits on UniFi network co
   - `pyyaml`
   - `pyotp`
   - `python-dotenv`
-  - `icecream`
 
 ---
 

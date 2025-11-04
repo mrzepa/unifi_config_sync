@@ -7,7 +7,6 @@ import json
 import os
 import threading
 from datetime import datetime, timedelta
-from icecream import ic
 
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()

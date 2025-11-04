@@ -1,5 +1,4 @@
 import logging
-from icecream import ic
 import os
 from requests.exceptions import HTTPError
 from datetime import datetime, timedelta

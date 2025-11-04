@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from urllib3.exceptions import InsecureRequestWarning
 from unifi.unifi import Unifi

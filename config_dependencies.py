@@ -140,10 +140,10 @@ class ConfigDependency:
                 if group_name not in user_groups:
                     missing_refs.append(f"User group '{group_name}'")
             
-            # Check AP group references
+            # Check AP group references (optional - only validate if AP groups are available)
             ap_groups = site_data.get('ap_groups', {})
             
-            if 'ap_group_ids_name' in config_data:
+            if 'ap_group_ids_name' in config_data and ap_groups:  # Only check if AP groups exist
                 if isinstance(config_data['ap_group_ids_name'], list):
                     for group_name in config_data['ap_group_ids_name']:
                         if group_name not in ap_groups:
@@ -151,6 +151,10 @@ class ConfigDependency:
                 elif config_data['ap_group_ids_name'] not in ap_groups:
                     group_name = config_data['ap_group_ids_name']
                     missing_refs.append(f"AP group '{group_name}'")
+                else:
+                    logger.debug(f"AP group '{config_data['ap_group_ids_name']}' found")
+            elif 'ap_group_ids_name' in config_data and not ap_groups:
+                logger.debug("AP group validation skipped - no AP groups available in site")
         
         return missing_refs
     
@@ -238,28 +242,46 @@ def validate_site_dependencies(unifi, site_name: str, config_type: str, config_d
         
         # Get existing VLANs
         if config_type in ['port_profiles', 'wlan_conf']:
-            networks = ui_site.network_conf.all()
-            vlans = {network.get("name"): network.get("_id") for network in networks}
-            site_data['vlans'] = vlans
+            try:
+                networks = ui_site.network_conf.all()
+                vlans = {network.get("name"): network.get("_id") for network in networks}
+                site_data['vlans'] = vlans
+            except Exception as e:
+                logger.warning(f"Failed to get VLANs from site '{site_name}': {e}")
+                missing_deps.append(f"Unable to validate VLANs: {e}")
         
         # Get existing RADIUS profiles
         if config_type == 'wlan_conf':
-            radius_profiles = ui_site.radius_profile.all()
-            radius_dict = {rp.get("name"): rp.get("_id") for rp in radius_profiles if rp.get("name") != 'Default'}
-            site_data['radius_profiles'] = radius_dict
+            try:
+                radius_profiles = ui_site.radius_profile.all()
+                radius_dict = {rp.get("name"): rp.get("_id") for rp in radius_profiles if rp.get("name") != 'Default'}
+                site_data['radius_profiles'] = radius_dict
+            except Exception as e:
+                logger.warning(f"Failed to get RADIUS profiles from site '{site_name}': {e}")
+                missing_deps.append(f"Unable to validate RADIUS profiles: {e}")
             
             # Get existing user groups
-            user_groups = ui_site.user_group.all()
-            user_groups_dict = {ug.get("name"): ug.get("_id") for ug in user_groups if ug.get("name") != 'Default'}
-            site_data['user_groups'] = user_groups_dict
+            try:
+                user_groups = ui_site.user_group.all()
+                user_groups_dict = {ug.get("name"): ug.get("_id") for ug in user_groups if ug.get("name") != 'Default'}
+                site_data['user_groups'] = user_groups_dict
+            except Exception as e:
+                logger.warning(f"Failed to get user groups from site '{site_name}': {e}")
+                missing_deps.append(f"Unable to validate user groups: {e}")
             
             # Get existing AP groups
-            ap_groups = ui_site.ap_group.all()
-            ap_groups_dict = {ag.get("name"): ag.get("_id") for ag in ap_groups if ag.get("name") != 'Default'}
-            site_data['ap_groups'] = ap_groups_dict
+            try:
+                ap_groups = ui_site.ap_groups.all()
+                ap_groups_dict = {ag.get("name"): ag.get("_id") for ag in ap_groups if ag.get("name") != 'Default'}
+                site_data['ap_groups'] = ap_groups_dict
+            except Exception as e:
+                logger.warning(f"Failed to get AP groups from site '{site_name}': {e}")
+                # AP groups are optional - don't add to missing_deps if they fail
+                logger.debug(f"AP groups validation failed, but continuing: {e}")
         
-        # Check dependencies against actual site data
-        missing_deps = check_site_dependencies(config_type, config_data, site_data)
+        # Only check dependencies if we successfully got the site data
+        if not missing_deps:
+            missing_deps = check_site_dependencies(config_type, config_data, site_data)
         
         if missing_deps:
             logger.warning(f"Dependencies missing in site '{site_name}': {', '.join(missing_deps)}")

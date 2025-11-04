@@ -95,7 +95,15 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
             item_to_backup = ui_site.network_conf.get(_id=item_id)
-            item_to_backup.backup(config.BACKUP_DIR)
+            # Use rollback manager instead of UniFi API backup
+            from rollback_manager import create_config_backup
+            create_config_backup(
+                config_type="networkconf",
+                site_name=site_name,
+                controller_url=str(unifi.base_url),
+                configs=[item_to_backup.data],  # Convert to dict via .data property
+                operation="delete"
+            )
             response = ui_site.network_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
@@ -171,7 +179,15 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
                     # backup the item before making changes to it.
                     item_to_backup = ui_site.network_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
+                    # Use rollback manager instead of UniFi API backup
+                    from rollback_manager import create_config_backup
+                    create_config_backup(
+                        config_type="networkconf",
+                        site_name=site_name,
+                        controller_url=str(unifi.base_url),
+                        configs=[item_to_backup.data],  # Convert to dict via .data property
+                        operation="replace"
+                    )
 
                     if not item_id:
                         logger.error(
@@ -288,7 +304,15 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                         f"replacing existing name '{existing_name}', at site '{site_name}'."
                     )
                 item_to_backup = ui_site.network_conf.get(_id=item_id)
-                item_to_backup.backup(config.BACKUP_DIR)
+                # Use rollback manager instead of UniFi API backup
+                from rollback_manager import create_config_backup
+                create_config_backup(
+                    config_type="networkconf",
+                    site_name=site_name,
+                    controller_url=str(unifi.base_url),
+                    configs=[item_to_backup.data],  # Convert to dict via .data property
+                    operation="replace"
+                )
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")

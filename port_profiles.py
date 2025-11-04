@@ -122,7 +122,15 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
             item_to_backup = ui_site.port_conf.get(_id=item_id)
-            item_to_backup.backup(config.BACKUP_DIR)
+            # Use rollback manager instead of UniFi API backup
+            from rollback_manager import create_config_backup
+            create_config_backup(
+                config_type="portconf",
+                site_name=site_name,
+                controller_url=str(unifi.base_url),
+                configs=[item_to_backup.data],  # Convert to dict via .data property
+                operation="delete"
+            )
             response = ui_site.port_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
@@ -295,7 +303,15 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
                 item_id = item_to_delete.get("_id")
                 if item_id:
                     item_to_backup = ui_site.port_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
+                    # Use rollback manager instead of UniFi API backup
+                    from rollback_manager import create_config_backup
+                    create_config_backup(
+                        config_type="portconf",
+                        site_name=site_name,
+                        controller_url=str(unifi.base_url),
+                        configs=[item_to_backup.data],  # Convert to dict via .data property
+                        operation="replace"
+                    )
                     delete_response = ui_site.port_conf.delete(item_id)
                     if not delete_response:
                         continue

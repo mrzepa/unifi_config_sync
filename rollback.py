@@ -53,6 +53,9 @@ def perform_rollback(backup_id: str, dry_run: bool = False):
         backup_id: The backup ID to rollback to
         dry_run: If True, only show what would be restored without making changes
     """
+    # Load environment variables
+    load_dotenv()
+    
     backup_data = get_backup_data(backup_id)
     if not backup_data:
         logger.error(f"Backup {backup_id} not found")
@@ -105,14 +108,18 @@ def perform_rollback(backup_id: str, dry_run: bool = False):
         ui_site = unifi.sites[site_name]
         
         # Import the appropriate module for the config type
-        if config_type == 'network_conf':
+        if config_type == 'network_conf' or config_type == 'networkconf':
             from network_conf import replace_item_at_site
-        elif config_type == 'port_profiles':
+            config_type = 'network_conf'  # Normalize for function calls
+        elif config_type == 'port_profiles' or config_type == 'portconf':
             from port_profiles import replace_items_at_site
-        elif config_type == 'radius_profiles':
+            config_type = 'port_profiles'  # Normalize for function calls
+        elif config_type == 'radius_profiles' or config_type == 'radiusprofile':
             from radius_profiles import replace_item_at_site
-        elif config_type == 'wlan_conf':
+            config_type = 'radius_profiles'  # Normalize for function calls
+        elif config_type == 'wlan_conf' or config_type == 'wlanconf':
             from wlan_conf import replace_item_at_site
+            config_type = 'wlan_conf'  # Normalize for function calls
         elif config_type == 'global_settings':
             from global_settings import replace_item_at_site
         else:

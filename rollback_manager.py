@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 class RollbackManager:
     """Manages configuration backups and rollbacks for UniFi sync operations."""
     
-    def __init__(self, backup_dir: str = "rollbacks"):
+    def __init__(self, backup_dir: str = None):
+        # Use provided backup_dir or default to config.BACKUP_DIR
+        if backup_dir is None:
+            import config
+            backup_dir = config.BACKUP_DIR
+        
         self.backup_dir = backup_dir
         self.backup_lock = threading.Lock()
         os.makedirs(backup_dir, exist_ok=True)
@@ -143,8 +148,8 @@ class RollbackManager:
         except Exception as e:
             logger.error(f"Failed to list backups: {e}")
         
-        # Sort by timestamp (newest first)
-        backups.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        # Sort by timestamp (newest first), handling None values
+        backups.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
         return backups
     
     def delete_backup(self, backup_id: str) -> bool:

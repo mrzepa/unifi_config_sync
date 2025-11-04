@@ -288,8 +288,8 @@ class BaseResource:
         candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
         
         # Append ID to candidate URLs if needed
-        if base_endpoint == 'networkconf' or not is_unifi_95_plus:
-            # For networkconf (all versions) and legacy endpoints, append ID to URL
+        if base_endpoint == 'networkconf' or base_endpoint == 'wlanconf' or not is_unifi_95_plus:
+            # For networkconf, wlanconf (all versions) and legacy endpoints, append ID to URL
             candidates = [(f"{url}/{item_id}", api_version) for url, api_version in candidates]
         
         logger.debug(f"Final candidates after ID processing: {candidates}")
@@ -323,6 +323,15 @@ class BaseResource:
                         if key in essential_fields:
                             filtered_data[key] = value
                     update_data = filtered_data
+                elif base_endpoint == 'wlanconf':
+                    # For wlanconf, include all fields but ensure _id is present
+                    if '_id' not in data:
+                        data = dict(data)  # Make a copy
+                        if path:
+                            data['_id'] = path
+                        elif hasattr(self, '_id') and self._id:
+                            data['_id'] = self._id
+                    update_data = data
                     
             logger.debug(f"Update data being sent: {update_data}")
             

@@ -3,3 +3,4 @@ pyotp~=2.9.0
 urllib3~=2.3.0
 PyYAML~=6.0.2
 python-dotenv~=1.1.0
+colorama~=0.4.6

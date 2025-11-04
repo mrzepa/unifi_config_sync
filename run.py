@@ -45,6 +45,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable verbose output (debug level logging)"
     )
+    
+    # Add the dry-run flag
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview changes without applying them (shows what would be created/updated/deleted)"
+    )
 
     # Create mutually exclusive group for -g/--get, -a/--add, -r/--replace, -d/--delete
     group = parser.add_mutually_exclusive_group(required=True)
@@ -293,6 +300,12 @@ if __name__ == "__main__":
         base_context['verbose'] = True
     else:
         base_context['verbose'] = False
+        
+    if args.dry_run:
+        base_context['dry_run'] = True
+        logger.info("🔍 DRY RUN MODE - No changes will be applied")
+    else:
+        base_context['dry_run'] = False
 
     # backup unifi switch ports
     # Use concurrent.futures to handle multithreading
@@ -370,3 +383,7 @@ if __name__ == "__main__":
                 logger.warning("To enable write operations, see the solutions above.")
                 logger.warning("=" * 80)
                 sys.exit(1)
+    
+    # Generate and display the operation summary
+    from summary_manager import generate_summary
+    generate_summary()

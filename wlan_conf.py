@@ -147,7 +147,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
                 configs=[item_to_backup.data],  # Convert to dict via .data property
                 operation="delete"
             )
-            response = ui_site.wlan_conf.delete(item_id)
+            response = ui_site.wlan_conf.delete(item_id, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -279,6 +279,9 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             # Check if the WLAN already exists - for add operation, skip existing WLANs
             if item_name in existing_item_names:
                 logger.info(f'WLAN name {item_name} already exists. Skipping (use --replace to update existing WLANs).')
+                # Track in summary
+                from summary_manager import log_and_track_skipped
+                log_and_track_skipped("WLAN", item_name, site_name, "add", "already exists")
                 continue
 
             # Add vlans ID if the corresponding name exists
@@ -325,7 +328,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.wlan_conf.create(new_item)
+            response = ui_site.wlan_conf.create(new_item, dry_run=context.get('dry_run', False))
             if isinstance(response, dict):
                 if response.get('rc') == 'error':
                     error_msg = response.get("msg")
@@ -334,9 +337,22 @@ def add_item_to_site(unifi, site_name: str, context: dict):
                         device_mac = response.get('device_mac', 'Unknown')
                         wlan_count = response.get('wlan_count', 'Unknown')
                         max_wlan = response.get('max_wlan', 'Unknown')
-                        logger.error(f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan} networks). Cannot create WLAN '{item_name}'.")
+                        error_details = f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan})"
+                        logger.error(f"{error_details}. Cannot create WLAN '{item_name}'.")
+                        
+                        # Track in summary
+                        from summary_manager import get_summary
+                        summary = get_summary(site_name, "add")
+                        summary.set_wlan_limit_reached()
+                        summary.add_failed_item("WLAN", item_name, error_details)
                     else:
                         logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {error_msg}')
+                        from summary_manager import log_and_track_failed
+                        log_and_track_failed("WLAN", item_name, site_name, "add", error_msg)
+                else:
+                    # Success - track in summary
+                    from summary_manager import log_and_track_created
+                    log_and_track_created("WLAN", item_name, site_name, "add")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -523,7 +539,16 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")
                 # Add the _id field to the update data - required by UniFi API
                 new_item["_id"] = item_id
-                response = ui_site.wlan_conf.update(new_item, item_id)
+                response = ui_site.wlan_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
+                
+                # Track the update in summary
+                if response and not (isinstance(response, dict) and response.get('rc') == 'error'):
+                    from summary_manager import log_and_track_updated
+                    log_and_track_updated("WLAN", item_name, site_name, "replace")
+                elif isinstance(response, dict) and response.get('rc') == 'error':
+                    from summary_manager import log_and_track_failed
+                    error_msg = response.get('msg', 'Unknown error')
+                    log_and_track_failed("WLAN", item_name, site_name, "replace", error_msg)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

@@ -302,7 +302,18 @@ rollback_manager = RollbackManager()
 def create_config_backup(config_type: str, site_name: str, controller_url: str, 
                         configs: List[Dict[str, Any]], operation: str = "sync") -> str:
     """Create a backup of current configurations."""
-    return rollback_manager.create_backup(config_type, site_name, controller_url, configs, operation)
+    backup_id = rollback_manager.create_backup(config_type, site_name, controller_url, configs, operation)
+    
+    # Track backup in summary
+    try:
+        from summary_manager import get_summary
+        summary = get_summary(site_name, operation)
+        summary.add_backup_created(backup_id)
+    except ImportError:
+        # summary_manager may not be available in all contexts
+        pass
+    
+    return backup_id
 
 def get_backup_data(backup_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve backup data by backup ID."""

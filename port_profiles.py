@@ -131,7 +131,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
                 configs=[item_to_backup.data],  # Convert to dict via .data property
                 operation="delete"
             )
-            response = ui_site.port_conf.delete(item_id)
+            response = ui_site.port_conf.delete(item_id, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -225,7 +225,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.port_conf.create(new_items)
+            response = ui_site.port_conf.create(new_items, dry_run=context.get('dry_run', False))
             if isinstance(response, dict):
                 if response.get('rc') == 'error':
                     if response.get('msg') == 'api.err.InvalidExcludedNetworkConf':
@@ -312,7 +312,7 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
                         configs=[item_to_backup.data],  # Convert to dict via .data property
                         operation="replace"
                     )
-                    delete_response = ui_site.port_conf.delete(item_id)
+                    delete_response = ui_site.port_conf.delete(item_id, dry_run=context.get('dry_run', False))
                     if not delete_response:
                         continue
                 else:
@@ -336,7 +336,7 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.port_conf.create(new_item)
+            response = ui_site.port_conf.create(new_item, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:

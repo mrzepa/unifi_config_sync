@@ -20,6 +20,59 @@ warnings.simplefilter("ignore", InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
+def radius_profiles_equal(existing_profile: dict, new_profile: dict) -> bool:
+    """
+    Compare two radius profile configurations to determine if they are effectively the same.
+    
+    Args:
+        existing_profile: The existing radius profile from the controller
+        new_profile: The new radius profile from the configuration file
+        
+    Returns:
+        True if the profiles are effectively the same, False otherwise
+    """
+    # Fields to exclude from comparison (they're dynamic or system-generated)
+    exclude_fields = {'_id', 'site_id', 'attr_hidden_id', 'attr_no_delete'}
+    
+    # Create copies for comparison
+    existing_copy = {k: v for k, v in existing_profile.items() if k not in exclude_fields}
+    new_copy = {k: v for k, v in new_profile.items() if k not in exclude_fields}
+    
+    # Normalize auth_servers for comparison
+    if 'auth_servers' in existing_copy:
+        existing_servers = existing_copy['auth_servers']
+    else:
+        existing_servers = []
+        
+    if 'auth_servers' in new_copy:
+        new_servers = new_copy['auth_servers']
+    else:
+        new_servers = []
+    
+    # Compare auth_servers separately, excluding dynamic fields
+    server_exclude_fields = {'_id'}
+    
+    def normalize_server(server):
+        return {k: v for k, v in server.items() if k not in server_exclude_fields}
+    
+    existing_normalized = [normalize_server(s) for s in existing_servers]
+    new_normalized = [normalize_server(s) for s in new_servers]
+    
+    # Sort servers for consistent comparison
+    existing_normalized.sort(key=lambda x: (x.get('ip', ''), x.get('name', '')))
+    new_normalized.sort(key=lambda x: (x.get('ip', ''), x.get('name', '')))
+    
+    # Compare auth_servers
+    if existing_normalized != new_normalized:
+        return False
+    
+    # Remove auth_servers from main comparison since we handled them separately
+    existing_copy.pop('auth_servers', None)
+    new_copy.pop('auth_servers', None)
+    
+    # Compare the rest of the fields
+    return existing_copy == new_copy
+
 def get_templates_from_base_site(unifi, site_name: str, context: dict):
     """
     Fetches and processes network configuration templates from a specified base site.
@@ -104,7 +157,7 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
                 configs=[item_to_backup.data],  # Convert to dict via .data property
                 operation="delete"
             )
-            response = ui_site.radius_profile.delete(item_id)
+            response = ui_site.radius_profile.delete(item_id, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -183,25 +236,68 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             
             if not has_complete_servers:
                 logger.info(f"Skipping radius profile '{item_name}' - auth servers incomplete (missing IP addresses)")
+                # Track in summary
+                from summary_manager import log_and_track_skipped
+                log_and_track_skipped("Radius Profile", item_name, site_name, "add", "incomplete auth servers")
                 continue
 
             # Check if the item name already exists
             if item_name in existing_item_names:
-                logger.info(f'Radius profile {item_name} already exists at site. Replacing the configuraiton.')
-                item_to_delete = existing_item_map[item_name]
-                item_id = item_to_delete.get("_id")
-                if item_id:
-                    item_to_backup = ui_site.radius_profile.get(_id=item_id)
-                    # Use rollback manager instead of UniFi API backup
-                    from rollback_manager import create_config_backup
-                    create_config_backup(
-                        config_type="radiusprofile",
-                        site_name=site_name,
-                        controller_url=str(unifi.base_url),
-                        configs=[item_to_backup.data],  # Convert to dict via .data property
-                        operation="replace"
-                    )
-                    delete_response = ui_site.radius_profile.delete(item_id)
+                logger.info(f'Radius profile {item_name} already exists at site. Checking if update is needed.')
+                existing_profile = existing_item_map[item_name]
+                
+                # Process auth_servers in new_item to prepare for comparison
+                updated_auth_servers_for_comparison = []
+                
+                for idx, server in enumerate(auth_servers):
+                    ip = server.get('ip')
+                    if ip and ip in RADIUS_SERVERS:
+                        # Update 'x_secret' for existing IP
+                        server_copy = server.copy()
+                        server_copy['x_secret'] = RADIUS_SERVERS[ip]
+                        updated_auth_servers_for_comparison.append(server_copy)
+                    elif not ip:
+                        # Server has no IP address - add one from RADIUS_SERVERS
+                        if RADIUS_SERVERS:
+                            # Use the first available RADIUS server
+                            first_ip = list(RADIUS_SERVERS.keys())[0]
+                            server_copy = server.copy()
+                            server_copy['ip'] = first_ip
+                            server_copy['x_secret'] = RADIUS_SERVERS[first_ip]
+                            updated_auth_servers_for_comparison.append(server_copy)
+                        else:
+                            logger.warning(f"No RADIUS servers configured in config.py for profile '{item_name}'. Skipping server entry.")
+                    else:
+                        # IP exists but not in RADIUS_SERVERS - keep as is but warn
+                        logger.warning(f"RADIUS server IP {ip} not found in RADIUS_SERVERS config for profile '{item_name}'. Using existing configuration.")
+                        updated_auth_servers_for_comparison.append(server.copy())
+                
+                # Create a copy of new_item with processed auth_servers for comparison
+                new_item_for_comparison = new_item.copy()
+                new_item_for_comparison['auth_servers'] = updated_auth_servers_for_comparison
+                
+                # Compare existing profile with new profile
+                if radius_profiles_equal(existing_profile, new_item_for_comparison):
+                    logger.info(f'Radius profile {item_name} already exists with same configuration. Skipping.')
+                    # Track in summary
+                    from summary_manager import log_and_track_skipped
+                    log_and_track_skipped("Radius Profile", item_name, site_name, "add", "same configuration")
+                    continue
+                else:
+                    logger.info(f'Radius profile {item_name} exists but configuration differs. Replacing.')
+                    item_id = existing_profile.get("_id")
+                    if item_id:
+                        item_to_backup = ui_site.radius_profile.get(_id=item_id)
+                        # Use rollback manager instead of UniFi API backup
+                        from rollback_manager import create_config_backup
+                        create_config_backup(
+                            config_type="radiusprofile",
+                            site_name=site_name,
+                            controller_url=str(unifi.base_url),
+                            configs=[item_to_backup.data],  # Convert to dict via .data property
+                            operation="replace"
+                        )
+                        delete_response = ui_site.radius_profile.delete(item_id, dry_run=context.get('dry_run', False))
 
             # Process auth_servers (add IPs and secrets)
             updated_auth_servers = []
@@ -233,7 +329,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.radius_profile.create(new_item)
+            response = ui_site.radius_profile.create(new_item, dry_run=context.get('dry_run', False))
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -326,7 +422,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                         configs=[item_to_backup.data],  # Convert to dict via .data property
                         operation="replace"
                     )
-                    delete_response = ui_site.radius_profile.delete(item_id)
+                    delete_response = ui_site.radius_profile.delete(item_id, dry_run=context.get('dry_run', False))
                     if not delete_response:
                         continue
                 else:
@@ -362,7 +458,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
             new_item['auth_servers'] = updated_auth_servers
             # Make the request to add the item config
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.radius_profile.create(new_item)
+            response = ui_site.radius_profile.create(new_item, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:

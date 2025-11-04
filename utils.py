@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 site_data_lock = threading.Lock()
 
-def vlan_check(unifi, site_name: str):
+def vlan_check(unifi, site_name: str, operation: str = "unknown"):
     """
     Validates that all required VLANs exist for the specified site. Compares the
     current VLAN configuration of the given site with a predefined baseline to
@@ -26,6 +26,8 @@ def vlan_check(unifi, site_name: str):
     :type unifi: object
     :param site_name: The name of the site to validate VLANs for.
     :type site_name: str
+    :param operation: The operation type for summary tracking.
+    :type operation: str
     :return: Returns True if all required VLANs exist, otherwise False.
     :rtype: bool
     """
@@ -52,10 +54,16 @@ def vlan_check(unifi, site_name: str):
     missing_vlans = baseline_vlan_names - existing_vlan_names
     extra_vlans = existing_vlan_names - baseline_vlan_names
 
+    # Track in summary
+    from summary_manager import get_summary
+    summary = get_summary(site_name, operation)
+    
     if missing_vlans:
         logger.error(f"Missing VLANs in {site_name}: {', '.join(sorted(missing_vlans))}")
+        summary.add_missing_vlans(list(missing_vlans))
     if extra_vlans:
         logger.info(f"Extra VLANs in {site_name}: {', '.join(sorted(extra_vlans))}")
+        summary.add_extra_vlans(list(extra_vlans))
 
     return len(missing_vlans) == 0
 
@@ -188,7 +196,21 @@ def process_controller(unifi, context: dict):
             futures = []
             for site_name in site_names_to_process:
                 if not context.get('skip_vlan_check'):
-                    if not vlan_check(unifi, site_name):
+                    # Determine operation type from context
+                    operation = "unknown"
+                    process_function = context.get('process_function')
+                    if process_function:
+                        if hasattr(process_function, '__name__'):
+                            if 'add' in process_function.__name__:
+                                operation = "add"
+                            elif 'replace' in process_function.__name__:
+                                operation = "replace"
+                            elif 'delete' in process_function.__name__:
+                                operation = "delete"
+                            elif 'get' in process_function.__name__:
+                                operation = "get"
+                    
+                    if not vlan_check(unifi, site_name, operation):
                         logger.error(f'Vlans not matching, skipping {site_name}... ')
                         return None
                 futures.append(executor.submit(build_site_data, unifi, site_name, output_filename, make_template=False))

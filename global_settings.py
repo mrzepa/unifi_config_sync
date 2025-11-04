@@ -201,7 +201,7 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
                 
                 # Use standard update method with item_id
                 path = f"{item_id}"
-                response = ui_site.setting.update(data=new_items, path=path)
+                response = ui_site.setting.update(data=new_items, path=path, dry_run=context.get('dry_run', False))
                 
                 if response and response.get('meta', {}).get('rc') == 'ok':
                     logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")

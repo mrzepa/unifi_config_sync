@@ -200,10 +200,10 @@ def add_item_to_site(unifi, site_name: str, context: dict):
                         # UniFi 9.5+: include the _id in the data instead of as a path parameter
                         new_item_with_id = dict(new_item)  # Make a copy
                         new_item_with_id['_id'] = item_id
-                        response = ui_site.network_conf.update(new_item_with_id)  # Don't pass item_id as path
+                        response = ui_site.network_conf.update(new_item_with_id, dry_run=context.get('dry_run', False))  # Don't pass item_id as path
                     else:
                         # Legacy UniFi: pass item_id as path parameter
-                        response = ui_site.network_conf.update(new_item, item_id)
+                        response = ui_site.network_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
 
                 # Case 2: VLAN and names match – log a debug message and skip
                 elif existing_name == item_name:
@@ -215,7 +215,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             else:
                 # Make the request to add the item
                 logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-                response = ui_site.network_conf.create(new_item)
+                response = ui_site.network_conf.create(new_item, dry_run=context.get('dry_run', False))
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -316,7 +316,7 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")
-                response = ui_site.network_conf.update(new_item, item_id)
+                response = ui_site.network_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")

@@ -158,7 +158,7 @@ class BaseResource:
         logger.warning(f'Could not find {self.endpoint} ID for {name}.')
         return None
 
-    def create(self, data: dict = None):
+    def create(self, data: dict = None, dry_run: bool = False):
         """
         Creates a new resource using the provided data, or default data if none is
         explicitly supplied. This method constructs the appropriate API endpoint
@@ -183,6 +183,30 @@ class BaseResource:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
+        
+        # Handle dry-run mode
+        if dry_run:
+            item_name = data.get('name', 'Unknown')
+            logger.info(f"🔍 DRY RUN: Would create {self.endpoint} '{item_name}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_created
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_created(item_type, item_name, self.site.desc, "add")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [data]}
         
         # Use endpoint registry to get candidate URLs
         candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
@@ -230,6 +254,45 @@ class BaseResource:
         
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully created {self.endpoint} at site '{self.site.desc}'")
+            
+            # Track in summary
+            try:
+                from summary_manager import log_and_track_created
+                item_name = data.get('name', 'Unknown')
+                
+                # If we don't have a name from data, try to get it from response
+                if item_name == 'Unknown':
+                    response_data = response.get("data", [])
+                    if isinstance(response_data, list) and response_data:
+                        # Handle list response (common in UniFi API)
+                        item_name = response_data[0].get('name', f'ID:{response_data[0].get("_id", "Unknown")}')
+                    elif isinstance(response_data, dict):
+                        # Handle dict response
+                        item_name = response_data.get('name', f'ID:{response_data.get("_id", "Unknown")}')
+                
+                # Map endpoint to friendly names
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                logger.debug(f"Attempting to track created item: {item_type}:{item_name} at {self.site.desc}")
+                log_and_track_created(item_type, item_name, self.site.desc, "add")
+                logger.debug(f"Successfully tracked created item in summary")
+            except ImportError:
+                # summary_manager may not be available in all contexts
+                logger.debug("summary_manager not available for tracking")
+                pass
+            except Exception as e:
+                # Don't let summary tracking break the main functionality
+                logger.error(f"Failed to track creation in summary: {e}")
+                import traceback
+                logger.debug(f"Summary tracking error traceback: {traceback.format_exc()}")
+            
             return response.get('data', {})
         else:
             meta = response.get('meta', {})
@@ -248,7 +311,7 @@ class BaseResource:
                 logger.error(f"Full response: {response}")
                 return response.get('meta', {})
 
-    def update(self, data: dict, path: str = None):
+    def update(self, data: dict, path: str = None, dry_run: bool = False):
         """Updates an existing item on the UniFi Controller."""
         site_name = self.site.name
         site_id = getattr(self.site, '_id', None)
@@ -257,6 +320,30 @@ class BaseResource:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
+        
+        # Handle dry-run mode
+        if dry_run:
+            item_name = data.get('name', 'Unknown')
+            logger.info(f"🔍 DRY RUN: Would update {self.endpoint} '{item_name}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_updated
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_updated(item_type, item_name, self.site.desc, "replace")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [data]}
         
         # Build URLs for update (add path or _id to endpoint)
         base_endpoint = self.endpoint
@@ -363,6 +450,34 @@ class BaseResource:
         if response.get("meta", {}).get('rc') == 'ok':
             actual_id = data.get('_id') or self._id or path
             logger.info(f"Successfully updated {base_endpoint} with ID {actual_id} at site '{self.site.desc}'")
+            
+            # Track in summary
+            try:
+                from summary_manager import log_and_track_updated
+                item_name = data.get('name', f'ID:{actual_id}')
+                # Map endpoint to friendly names
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(base_endpoint, base_endpoint)
+                logger.debug(f"Attempting to track updated item: {item_type}:{item_name} at {self.site.desc}")
+                log_and_track_updated(item_type, item_name, self.site.desc, "replace")
+                logger.debug(f"Successfully tracked updated item in summary")
+            except ImportError:
+                # summary_manager may not be available in all contexts
+                logger.debug("summary_manager not available for tracking")
+                pass
+            except Exception as e:
+                # Don't let summary tracking break the main functionality
+                logger.error(f"Failed to track update in summary: {e}")
+                import traceback
+                logger.debug(f"Summary tracking error traceback: {traceback.format_exc()}")
+            
             return response.get('data', {})
         else:
             meta = response.get('meta', {})
@@ -373,7 +488,7 @@ class BaseResource:
             logger.error(f"Full response: {response}")
             return None
         
-    def delete(self, item_id: int = None):
+    def delete(self, item_id: int = None, dry_run: bool = False):
         """
         Delete an item from a specific endpoint using its ID. This method sends a DELETE request
         to the appropriate URL and logs the success of the deletion operation.
@@ -394,6 +509,29 @@ class BaseResource:
             item_id = self._id
         if not item_id:
             raise ValueError(f'Item ID required to delete {self.endpoint}.')
+        
+        # Handle dry-run mode
+        if dry_run:
+            logger.info(f"🔍 DRY RUN: Would delete {self.endpoint} with ID '{item_id}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_deleted
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_deleted(item_type, f"ID:{item_id}", self.site.desc, "delete")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [{'_id': item_id}]}
         
         # Build URLs for delete (add item_id to endpoint)
         base_endpoint = self.endpoint

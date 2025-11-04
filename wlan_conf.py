@@ -13,6 +13,8 @@ from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
+from rollback_manager import create_config_backup
+from config_dependencies import validate_site_dependencies
 import threading
 
 site_data_lock = threading.Lock()
@@ -215,6 +217,18 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
+            
+            # Smart dependency validation - check if dependencies exist in the actual site
+            missing_deps = validate_site_dependencies(unifi, site_name, 'wlan_conf', new_item)
+            if missing_deps:
+                logger.error(f"WLAN '{item_name}' has missing dependencies in site '{site_name}':")
+                for dep in missing_deps:
+                    logger.error(f"   • {dep}")
+                logger.error(f"   Please ensure these resources exist on site '{site_name}' before deploying WLAN configurations")
+                continue
+            else:
+                logger.debug(f"✅ All dependencies for WLAN '{item_name}' exist in site '{site_name}'")
+
             # Check if the VLAN exists in the existing items
             if item_name in existing_item_names:
                 logger.info(f'WLAN name {item_name} already exists. Replacing it with new configuration.')

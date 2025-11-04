@@ -12,6 +12,8 @@ This project is designed to manage common configuration bits on UniFi network co
 - **Automatic session management** with retry logic for expired sessions
 - **Enhanced error handling** for common UniFi API errors
 - **Backward compatibility** with older UniFi versions
+- **🆕 Configuration dependency management** - Ensures proper deployment order and validates dependencies
+- **🆕 Manual rollback system** - Automatic backups before changes with manual rollback capability
 
 ---
 
@@ -385,6 +387,123 @@ python3 run.py --add -v
 
 ---
 
+## 🆕 Configuration Dependency Management
+
+The system now automatically manages dependencies between configuration types to ensure proper deployment order:
+
+### Dependency Chain
+```
+1. Networks (VLANs) - No dependencies
+2. RADIUS Profiles - No dependencies  
+3. Global Settings - No dependencies
+4. Port Profiles - Depends on Networks
+5. WLANs - Depends on Networks + RADIUS Profiles
+```
+
+### 🧠 Smart Dependency Validation
+**NEW**: The system now uses intelligent dependency checking that validates whether required resources already exist on the target controller, rather than requiring you to deploy everything at once.
+
+- **🔍 Existing Resource Detection**: Automatically detects if VLANs, RADIUS profiles, and other dependencies already exist on your UniFi controller
+- **⚡ Selective Deployment**: Only deploys configurations that don't already exist, saving time and reducing unnecessary changes
+- **🎯 Site-Specific Validation**: Checks each target site individually for existing dependencies
+- **📋 Clear Reporting**: Shows exactly which dependencies exist and which are missing
+
+### How It Works
+```bash
+# Scenario: VLAN-10 already exists on controller, but you want to deploy a new WLAN
+# OLD WAY: Required deploying VLAN-10 + WLAN together
+# NEW WAY: Just deploy WLAN - system validates VLAN-10 already exists
+
+python run.py -a --module wlan_conf --include-names "Corporate-WiFi"
+
+# System will:
+# ✅ Check if VLAN-10 exists on target site (it does!)
+# ✅ Check if RADIUS profile exists (it does!)
+# ✅ Deploy only the WLAN configuration
+# ✅ Skip unnecessary VLAN deployment
+```
+
+### Validation Examples
+```bash
+# ✅ This works when VLANs already exist on the controller:
+python run.py -a --module wlan_conf --include-names "Corporate-WiFi"
+
+# ✅ This works when deploying everything fresh:
+python run.py -a --include-names "VLAN-10,Radius-Profile,WLAN-Corporate"
+
+# ❌ This fails when dependencies don't exist:
+python run.py -a --module wlan_conf --include-names "New-WiFi"
+# Error: VLAN 'Corporate-VLAN' not found in site 'MainOffice'
+```
+
+### 🔧 Troubleshooting Dependencies
+
+**Q: Why am I getting "VLAN not found" errors?**
+A: The smart validation checks if the VLAN actually exists on your UniFi controller. Make sure:
+- The VLAN is created on your controller (via UniFi UI or previous deployment)
+- The VLAN name in your JSON file exactly matches the name on the controller
+- You're targeting the correct site where the VLAN exists
+
+**Q: Can I disable smart dependency validation?**
+A: Yes! Use strict validation if you want to ensure all dependencies are deployed together:
+```python
+# In code, use check_existing_resources=False
+validate_config_dependencies(configs, check_existing_resources=False)
+```
+
+**Q: What happens if I have multiple sites with different VLANs?**
+A: The system checks each target site individually. A WLAN deployment will succeed on sites where the VLAN exists and fail on sites where it doesn't, with clear error messages.
+
+### Automatic Validation
+- **Pre-deployment validation**: Ensures all dependencies exist on target sites
+- **Smart ordering**: Automatically reorders operations based on dependencies
+- **Site reference checking**: Validates that VLANs, RADIUS profiles, etc. exist in each target site
+- **Selective deployment**: Skips resources that already exist, deploys only what's needed
+
+---
+
+## 🆕 Manual Rollback System
+
+Automatic backups are created before making changes, with manual rollback capability:
+
+### Automatic Backups
+- **Pre-change backups**: Created before any add/replace/delete operation
+- **Comprehensive data**: Includes full configuration state
+- **Unique IDs**: Each backup has a timestamped identifier
+- **Organized storage**: Stored in `rollbacks/` directory
+
+### Rollback CLI
+```bash
+# List available backups
+python rollback.py list
+
+# List backups for specific config type
+python rollback.py list --config-type wlan_conf
+
+# Show backup details
+python rollback.py info wlan_conf_MainOffice_20241104_143022_replace
+
+# Perform rollback (dry run first)
+python rollback.py rollback wlan_conf_MainOffice_20241104_143022_replace --dry-run
+
+# Execute actual rollback
+python rollback.py rollback wlan_conf_MainOffice_20241104_143022_replace
+
+# Delete old backup
+python rollback.py delete wlan_conf_MainOffice_20241104_143022_replace
+
+# Clean up old backups (older than 30 days)
+python rollback.py cleanup --days 30
+```
+
+### Rollback Safety Features
+- **Pre-rollback backup**: Creates backup before rolling back
+- **Validation**: Checks backup integrity before restoration
+- **Dry run mode**: Preview changes without executing
+- **Detailed logging**: Complete audit trail of operations
+
+---
+
 ## Command Reference
 
 ### Basic Commands:
@@ -392,14 +511,20 @@ python3 run.py --add -v
 # Fetch configurations
 python3 run.py --get --base-site-name Default
 
-# Add all configurations
-python3 run.py --add
+# Deploy configurations with automatic dependency ordering and smart validation
+python run.py -a --include-names "VLAN-10,VLAN-20,WLAN-Corporate"
 
-# Replace specific configurations
-python3 run.py --replace --include-names "Profile1,Profile2"
+# Deploy only WLAN when VLANs already exist on controller (smart validation)
+python run.py -a --module wlan_conf --include-names "WLAN-Corporate"
 
-# Delete specific configurations
-python3 run.py --delete --include-names "OldProfile"
+# Replace specific configurations with automatic backup creation
+python run.py -r --include-names "WLAN-Corporate"
+
+# Delete configurations (with backup)
+python run.py -d --include-names "Old-VLAN"
+
+# Rollback to previous configuration if needed
+python rollback.py rollback network_conf_MainOffice_20241104_143022_replace
 
 # Process specific modules
 python3 run.py --add --module global_settings

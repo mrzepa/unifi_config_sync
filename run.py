@@ -15,6 +15,7 @@ import wlan_conf
 from utils import get_valid_names_from_dir, process_single_controller, validate_names, setup_logging
 from dotenv import load_dotenv
 from backup_ports import backup_single_controller
+from config_dependencies import validate_config_dependencies, get_deployment_order
 
 env_path = os.path.join(os.path.expanduser("~"), ".env")
 load_dotenv()
@@ -150,6 +151,38 @@ if __name__ == "__main__":
         # Keep only the specified module
         module_mapping = {args.module: module_mapping[args.module]}
         context_dict = {args.module: context_dict[args.module]}
+
+    # Get the configuration types being processed
+    config_types = list(context_dict.keys())
+    
+    # Validate dependencies and get proper deployment order
+    if not args.get:  # Dependencies only matter for add/replace/delete operations
+        logger.info("Validating configuration dependencies...")
+        
+        # Use smart dependency validation that checks existing resources on target sites
+        # This allows deploying WLAN configs when VLANs already exist on the controller
+        if not validate_config_dependencies(config_types, check_existing_resources=True):
+            logger.error("Dependency validation failed. Please check the deployment order.")
+            sys.exit(1)
+        
+        logger.info("✅ Smart dependency validation enabled - checking existing resources on target sites")
+        logger.info("   • VLANs, RADIUS profiles, and other dependencies will be validated on each target site")
+        logger.info("   • No need to deploy dependencies if they already exist on the controller")
+        
+        # Still use deployment order for consistency, but don't require all dependencies to be in deployment list
+        ordered_types = get_deployment_order(config_types)
+        logger.info(f"Processing order: {' -> '.join(ordered_types)}")
+        
+        # Reorder context_dict and module_mapping according to dependencies
+        ordered_context_dict = {}
+        ordered_module_mapping = {}
+        for config_type in ordered_types:
+            if config_type in context_dict:
+                ordered_context_dict[config_type] = context_dict[config_type]
+                ordered_module_mapping[config_type] = module_mapping[config_type]
+        
+        context_dict = ordered_context_dict
+        module_mapping = ordered_module_mapping
 
     # Get the directory for storing the items
     valid_names = []

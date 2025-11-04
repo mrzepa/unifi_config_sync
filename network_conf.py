@@ -13,6 +13,7 @@ from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names, build_site_data
+from rollback_manager import create_config_backup
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -243,6 +244,13 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
         existing_items = ui_site.network_conf.all()
         existing_item_map = {vlan.get("vlan"): vlan for vlan in existing_items}  # Map VLANs to full items
         logger.debug(f"Existing {ENDPOINT}: {existing_item_map.keys()}")
+        
+        # Create backup before making changes
+        backup_id = create_config_backup(
+            'network_conf', site_name, unifi.base_url, existing_items, 'replace'
+        )
+        logger.info(f"Created backup before replacement: {backup_id}")
+        
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} for site '{site_name}': {e}")
         raise

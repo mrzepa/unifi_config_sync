@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
@@ -123,8 +122,16 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
             item_to_backup = ui_site.port_conf.get(_id=item_id)
-            item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.port_conf.delete(item_id)
+            # Use rollback manager instead of UniFi API backup
+            from rollback_manager import create_config_backup
+            create_config_backup(
+                config_type="portconf",
+                site_name=site_name,
+                controller_url=str(unifi.base_url),
+                configs=[item_to_backup.data],  # Convert to dict via .data property
+                operation="delete"
+            )
+            response = ui_site.port_conf.delete(item_id, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -196,20 +203,10 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
             new_items = read_json_file(file_path)
             item_name = new_items.get("name")
 
-            # Check if the item name exists and delete it using its _id
+            # Check if the item name exists and skip if it does
             if item_name in existing_item_map:
-                logger.info(f'Port profile with {item_name} already exists. Replacing it with new one.')
-                item_to_delete = existing_item_map[item_name]
-                item_id = item_to_delete.get("_id")
-                if item_id:
-                    item_to_backup = ui_site.port_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.port_conf.delete(item_id)
-                    if not delete_response:
-                        continue
-                else:
-                    logger.error(f"{ENDPOINT} '{item_name}' exists but its '_id' is missing. Skipping Port Profile {item_name}.")
-                    continue
+                logger.info(f'Port profile "{item_name}" already exists on site "{site_name}". Skipping processing.')
+                continue
 
             # modify the item for site specific vlan IDs
             for key, value in new_items.items():
@@ -228,7 +225,7 @@ def add_item_to_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.port_conf.create(new_items)
+            response = ui_site.port_conf.create(new_items, dry_run=context.get('dry_run', False))
             if isinstance(response, dict):
                 if response.get('rc') == 'error':
                     if response.get('msg') == 'api.err.InvalidExcludedNetworkConf':
@@ -306,8 +303,16 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
                 item_id = item_to_delete.get("_id")
                 if item_id:
                     item_to_backup = ui_site.port_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
-                    delete_response = ui_site.port_conf.delete(item_id)
+                    # Use rollback manager instead of UniFi API backup
+                    from rollback_manager import create_config_backup
+                    create_config_backup(
+                        config_type="portconf",
+                        site_name=site_name,
+                        controller_url=str(unifi.base_url),
+                        configs=[item_to_backup.data],  # Convert to dict via .data property
+                        operation="replace"
+                    )
+                    delete_response = ui_site.port_conf.delete(item_id, dry_run=context.get('dry_run', False))
                     if not delete_response:
                         continue
                 else:
@@ -331,7 +336,7 @@ def replace_items_at_site(unifi: Unifi, site_name: str, context: dict):
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.port_conf.create(new_item)
+            response = ui_site.port_conf.create(new_item, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully created {ENDPOINT} '{item_name}' at site '{site_name}'")
             else:
@@ -411,14 +416,25 @@ if __name__ == "__main__":
         setup_logging(logging.INFO)
 
     # Read in the environment variables
-    try:
-        ui_username = os.getenv("UI_USERNAME")
-        ui_password = os.getenv("UI_PASSWORD")
-        ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_username = os.getenv("UI_USERNAME")
+    ui_password = os.getenv("UI_PASSWORD")
+    ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_api_key = os.getenv("UI_API_KEY")
 
-    except KeyError as e:
-        logger.critical("Unifi username or password is missing from environment variables.")
-        raise SystemExit(1)
+    # Check if API key auth is disabled
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        # API key auth is disabled, require username/password/mfa
+        if not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("SKIP_API_KEY_AUTH is True. Provide UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            sys.exit(1)
+        logger.info("API key authentication disabled (SKIP_API_KEY_AUTH=True)")
+    else:
+        # Require either API key OR username/password/mfa
+        if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            sys.exit(1)
 
     # get the list of controllers
     controller_list = config.CONTROLLERS
@@ -440,19 +456,19 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_names_list = None
 
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
-        process_fucntion = add_item_to_site
+        process_function = add_item_to_site
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -480,7 +496,7 @@ if __name__ == "__main__":
         else:
             sys.exit(1)
 
-        process_fucntion = replace_items_at_site
+        process_function = replace_items_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
@@ -495,10 +511,10 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = delete_item_from_site
+        process_function = delete_item_from_site
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,
@@ -510,7 +526,8 @@ if __name__ == "__main__":
                                                     context,
                                                     ui_username,
                                                     ui_password,
-                                                    ui_mfa_secret): controller for controller in
+                                                    ui_mfa_secret,
+                                                    ui_api_key): controller for controller in
                                     controller_list}
 
             # Wait for all controller-processing threads to complete

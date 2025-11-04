@@ -5,9 +5,7 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 from utils import process_single_controller, save_dicts_to_json, read_json_file

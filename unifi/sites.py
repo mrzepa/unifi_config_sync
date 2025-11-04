@@ -1,4 +1,3 @@
-from icecream import ic
 import logging
 from .portconf import PortConf
 from .device import Device

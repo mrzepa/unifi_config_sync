@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
@@ -14,6 +13,7 @@ from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names, build_site_data
+from rollback_manager import create_config_backup
 
 # Suppress only the InsecureRequestWarning
 warnings.simplefilter("ignore", InsecureRequestWarning)
@@ -95,7 +95,15 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
             item_to_backup = ui_site.network_conf.get(_id=item_id)
-            item_to_backup.backup(config.BACKUP_DIR)
+            # Use rollback manager instead of UniFi API backup
+            from rollback_manager import create_config_backup
+            create_config_backup(
+                config_type="networkconf",
+                site_name=site_name,
+                controller_url=str(unifi.base_url),
+                configs=[item_to_backup.data],  # Convert to dict via .data property
+                operation="delete"
+            )
             response = ui_site.network_conf.delete(item_id)
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
@@ -171,14 +179,31 @@ def add_item_to_site(unifi, site_name: str, context: dict):
 
                     # backup the item before making changes to it.
                     item_to_backup = ui_site.network_conf.get(_id=item_id)
-                    item_to_backup.backup(config.BACKUP_DIR)
+                    # Use rollback manager instead of UniFi API backup
+                    from rollback_manager import create_config_backup
+                    create_config_backup(
+                        config_type="networkconf",
+                        site_name=site_name,
+                        controller_url=str(unifi.base_url),
+                        configs=[item_to_backup.data],  # Convert to dict via .data property
+                        operation="replace"
+                    )
 
                     if not item_id:
                         logger.error(
                             f"Existing VLAN '{item_vlan}' has no '_id'. Unable to update name for this item. Skipping."
                         )
                         continue
-                    response = ui_site.network_conf.update(new_item, item_id)
+                    
+                    # Check if this is UniFi 9.5+ (has http_session attribute)
+                    if hasattr(ui_site.unifi, 'http_session') and ui_site.unifi.http_session:
+                        # UniFi 9.5+: include the _id in the data instead of as a path parameter
+                        new_item_with_id = dict(new_item)  # Make a copy
+                        new_item_with_id['_id'] = item_id
+                        response = ui_site.network_conf.update(new_item_with_id, dry_run=context.get('dry_run', False))  # Don't pass item_id as path
+                    else:
+                        # Legacy UniFi: pass item_id as path parameter
+                        response = ui_site.network_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
 
                 # Case 2: VLAN and names match – log a debug message and skip
                 elif existing_name == item_name:
@@ -190,7 +215,7 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             else:
                 # Make the request to add the item
                 logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-                response = ui_site.network_conf.create(new_item)
+                response = ui_site.network_conf.create(new_item, dry_run=context.get('dry_run', False))
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -235,6 +260,13 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
         existing_items = ui_site.network_conf.all()
         existing_item_map = {vlan.get("vlan"): vlan for vlan in existing_items}  # Map VLANs to full items
         logger.debug(f"Existing {ENDPOINT}: {existing_item_map.keys()}")
+        
+        # Create backup before making changes
+        backup_id = create_config_backup(
+            'network_conf', site_name, unifi.base_url, existing_items, 'replace'
+        )
+        logger.info(f"Created backup before replacement: {backup_id}")
+        
     except Exception as e:
         logger.error(f"Failed to fetch existing {ENDPOINT} for site '{site_name}': {e}")
         raise
@@ -272,11 +304,19 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                         f"replacing existing name '{existing_name}', at site '{site_name}'."
                     )
                 item_to_backup = ui_site.network_conf.get(_id=item_id)
-                item_to_backup.backup(config.BACKUP_DIR)
+                # Use rollback manager instead of UniFi API backup
+                from rollback_manager import create_config_backup
+                create_config_backup(
+                    config_type="networkconf",
+                    site_name=site_name,
+                    controller_url=str(unifi.base_url),
+                    configs=[item_to_backup.data],  # Convert to dict via .data property
+                    operation="replace"
+                )
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")
-                response = ui_site.network_conf.update(new_item, item_id)
+                response = ui_site.network_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -383,36 +423,36 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_name_list = None
 
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
-        process_fucntion = add_item_to_site
+        process_function = add_item_to_site
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
 
         if args.include_names:
             if not validate_names(args.include_names, valid_names, 'include-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT}")
         if args.exclude_names:
             if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, f"Invalid exclude-names for {ENDPOINT}")
 
     elif args.replace:
         logging.info(f"Option selected: Replace {ENDPOINT}")
 
         if not args.include_names:
             logger.error(f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, f"--replace requires a list of {ENDPOINT} names to replace using --include-names.")
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -421,14 +461,14 @@ if __name__ == "__main__":
             # Log the items to be replaced
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
-            raise argparse.ArgumentError
-        process_fucntion = replace_item_at_site
+            raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT} replacement")
+        process_function = replace_item_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
         if not args.include_names:
             logger.error(f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, f"--delete requires a list of {ENDPOINT} names to delete using --include-names.")
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -436,11 +476,11 @@ if __name__ == "__main__":
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
-            raise argparse.ArgumentError
-        process_fucntion = delete_item_from_site
+            raise argparse.ArgumentError(None, f"Invalid include-names for {ENDPOINT} deletion")
+        process_function = delete_item_from_site
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

@@ -1,14 +1,14 @@
 import logging
-from icecream import ic
 import os
 from requests.exceptions import HTTPError
 from datetime import datetime, timedelta
 import json
 import threading
 
-file_lock = threading.Lock()
-
+from unifi.endpoints import get_resource_candidate_urls, APIVersion
 logger = logging.getLogger(__name__)
+
+file_lock = threading.Lock()
 
 class BaseResource:
 
@@ -19,8 +19,7 @@ class BaseResource:
         self._id: int = None  # The resource ID
         self.name: str = kwargs.get('name', None)
         self.site = site
-        self.base_path: str = kwargs.get('base_path', None)
-        self.api_path: str = kwargs.get('api_path', None)
+        self.output_dir: str = kwargs.get('output_dir', None)
 
     def __str__(self):
         return f"{self.__class__.__name__}: {self.name}"
@@ -57,12 +56,20 @@ class BaseResource:
                             matching resources or multiple matches.
         """
         site_name = self.site.name
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
         matching_items = []
-        all_items = self.unifi.make_request(url, 'GET')
+        all_items = None
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} endpoint: {url} (API version: {api_version})")
+            all_items = self.unifi.make_request(url, 'GET')
+            if all_items:
+                logger.debug(f"Successfully fetched {self.endpoint} from {api_version}")
+                break
         if all_items.get("meta", {}).get('rc') == 'ok':
             for item in all_items.get('data', []):
                 if all(item.get(key) == value for key, value in filters.items()):
@@ -96,11 +103,19 @@ class BaseResource:
         :rtype: list
         """
         site_name = self.site.name
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
-        all_items = self.unifi.make_request(url, 'GET')
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        all_items = None
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} endpoint: {url} (API version: {api_version})")
+            all_items = self.unifi.make_request(url, 'GET')
+            if all_items is not None:
+                logger.debug(f"Successfully fetched {self.endpoint} from {api_version}")
+                break
         if not all_items:
             logger.error(f'Could not get data for {self.endpoint}.')
             return []
@@ -143,7 +158,7 @@ class BaseResource:
         logger.warning(f'Could not find {self.endpoint} ID for {name}.')
         return None
 
-    def create(self, data: dict = None):
+    def create(self, data: dict = None, dry_run: bool = False):
         """
         Creates a new resource using the provided data, or default data if none is
         explicitly supplied. This method constructs the appropriate API endpoint
@@ -162,47 +177,318 @@ class BaseResource:
         :raises ValueError: If no data is provided to create the resource.
         """
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not data:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}"
-        response = self.unifi.make_request(url, 'POST', data=data)
+        
+        # Handle dry-run mode
+        if dry_run:
+            item_name = data.get('name', 'Unknown')
+            logger.info(f"🔍 DRY RUN: Would create {self.endpoint} '{item_name}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_created
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_created(item_type, item_name, self.site.desc, "add")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [data]}
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {self.endpoint} create endpoint: {url} (API version: {api_version})")
+            # Check if this is UniFi 9.5+ and filter fields accordingly
+            create_data = data
+            if hasattr(self.unifi, 'http_session') and self.unifi.http_session:
+                # UniFi 9.5+ uses session-based auth - filter to browser-like fields
+                if self.endpoint == 'networkconf':
+                    essential_fields = [
+                        'vlan_enabled', 'purpose', 'name', 'vlan', 
+                        'enabled', 'is_nat', 'igmp_snooping', 'dhcpguard_enabled', 
+                        'network_isolation_enabled', 'ip_subnet', 'dhcpd_enabled', 
+                        'dhcpd_start', 'dhcpd_stop', 'domain_name', 'mdns_enabled'
+                    ]
+                    filtered_data = {}
+                    for key, value in data.items():
+                        # Only include essential fields that the browser sends
+                        if key in essential_fields:
+                            filtered_data[key] = value
+                    create_data = filtered_data
+            
+            resp_try = self.unifi.make_request(url, 'POST', data=create_data)
+            if resp_try is not None:
+                response = resp_try
+                logger.debug(f"Successfully created {self.endpoint} using {api_version}")
+                break
+            else:
+                logger.debug(f"API returned None response for {url}")
+        
+        if response is None:
+            logger.warning(f"Unable to create {self.endpoint}: Admin account lacks write permissions")
+            return {}
+        
+        # Debug: Log the actual response structure
+        logger.debug(f"Create response type: {type(response)}")
+        logger.debug(f"Create response content: {response}")
+        
+        if not isinstance(response, dict):
+            logger.error(f"Failed to create {self.endpoint}: Unexpected response type {type(response)} - Response: {response}")
+            return {}
+        
         if response.get("meta", {}).get('rc') == 'ok':
             logger.info(f"Successfully created {self.endpoint} at site '{self.site.desc}'")
+            
+            # Track in summary
+            try:
+                from summary_manager import log_and_track_created
+                item_name = data.get('name', 'Unknown')
+                
+                # If we don't have a name from data, try to get it from response
+                if item_name == 'Unknown':
+                    response_data = response.get("data", [])
+                    if isinstance(response_data, list) and response_data:
+                        # Handle list response (common in UniFi API)
+                        item_name = response_data[0].get('name', f'ID:{response_data[0].get("_id", "Unknown")}')
+                    elif isinstance(response_data, dict):
+                        # Handle dict response
+                        item_name = response_data.get('name', f'ID:{response_data.get("_id", "Unknown")}')
+                
+                # Map endpoint to friendly names
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                logger.debug(f"Attempting to track created item: {item_type}:{item_name} at {self.site.desc}")
+                log_and_track_created(item_type, item_name, self.site.desc, "add")
+                logger.debug(f"Successfully tracked created item in summary")
+            except ImportError:
+                # summary_manager may not be available in all contexts
+                logger.debug("summary_manager not available for tracking")
+                pass
+            except Exception as e:
+                # Don't let summary tracking break the main functionality
+                logger.error(f"Failed to track creation in summary: {e}")
+                import traceback
+                logger.debug(f"Summary tracking error traceback: {traceback.format_exc()}")
+            
             return response.get('data', {})
         else:
-            return response.get('meta', {})
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            error_rc = meta.get('rc', 'Unknown rc')
+            
+            # Handle specific error cases with friendly messages
+            if error_msg == 'api.err.TooManyWirelessNetwork':
+                device_mac = meta.get('device_mac', 'Unknown')
+                wlan_count = meta.get('wlan_count', 'Unknown')
+                max_wlan = meta.get('max_wlan', 'Unknown')
+                logger.error(f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan} networks).")
+                return {'meta': {'rc': 'error', 'msg': 'api.err.TooManyWirelessNetwork'}}
+            else:
+                logger.error(f"Failed to create {self.endpoint}: rc={error_rc}, msg={error_msg}")
+                logger.error(f"Full response: {response}")
+                return response.get('meta', {})
 
-    def update(self, data: dict = None, path: str = None):
+    def update(self, data: dict, path: str = None, dry_run: bool = False):
+        """Updates an existing item on the UniFi Controller."""
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not data:
             data = self.data
         if not data:
             raise ValueError(f'No data to create {self.endpoint}.')
+        
+        # Handle dry-run mode
+        if dry_run:
+            item_name = data.get('name', 'Unknown')
+            logger.info(f"🔍 DRY RUN: Would update {self.endpoint} '{item_name}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_updated
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_updated(item_type, item_name, self.site.desc, "replace")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [data]}
+        
+        # Build URLs for update (add path or _id to endpoint)
+        base_endpoint = self.endpoint
+        logger.debug(f"Base endpoint: {base_endpoint}")
+        logger.debug(f"Data _id: {data.get('_id')}")
+        logger.debug(f"Self _id: {self._id}")
+        logger.debug(f"Path parameter: {path}")
+        
+        # For UniFi 9.5+, networkconf still needs ID in URL path despite session auth
+        is_unifi_95_plus = hasattr(self.unifi, 'http_session') and self.unifi.http_session
+        
+        # Store the ID for later URL construction
+        item_id = None
         if path:
-            if self.base_path:
-                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{path}"
+            item_id = path
+        elif data.get('_id'):
+            item_id = data.get('_id')
+        elif self._id:
+            item_id = self._id
+        
+        if not item_id:
+            raise ValueError(f"No ID found in data or object for updating {base_endpoint}")
+        
+        # Always use base endpoint for registry lookup
+        self.endpoint = base_endpoint
+        logger.debug(f"Base endpoint for registry lookup: {self.endpoint}")
+        
+        # Use endpoint registry to get candidate URLs
+        candidates = get_resource_candidate_urls(self.endpoint, site_tokens)
+        
+        # Append ID to candidate URLs if needed
+        if base_endpoint == 'networkconf' or base_endpoint == 'wlanconf' or not is_unifi_95_plus:
+            # For networkconf, wlanconf (all versions) and legacy endpoints, append ID to URL
+            candidates = [(f"{url}/{item_id}", api_version) for url, api_version in candidates]
+        
+        logger.debug(f"Final candidates after ID processing: {candidates}")
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {base_endpoint} update endpoint: {url} (API version: {api_version})")
+            # Check if this is UniFi 9.5+ and filter fields accordingly
+            update_data = data
+            if hasattr(self.unifi, 'http_session') and self.unifi.http_session:
+                # UniFi 9.5+ uses session-based auth - filter to browser-like fields
+                if base_endpoint == 'networkconf':
+
+                    # Ensure _id is in data for networkconf updates
+                    if '_id' not in data:
+                        data = dict(data)  # Make a copy
+                        if path:
+                            data['_id'] = path
+                        elif hasattr(self, '_id') and self._id:
+                            data['_id'] = self._id
+                    
+                    essential_fields = [
+                        'vlan_enabled', 'purpose', '_id', 'site_id', 'name', 'vlan', 
+                        'enabled', 'is_nat', 'igmp_snooping', 'dhcpguard_enabled', 
+                        'network_isolation_enabled', 'ip_subnet', 'dhcpd_enabled', 
+                        'dhcpd_start', 'dhcpd_stop', 'domain_name', 'mdns_enabled'
+                    ]
+                    filtered_data = {}
+                    for key, value in data.items():
+                        # Only include essential fields that the browser sends
+                        if key in essential_fields:
+                            filtered_data[key] = value
+                    update_data = filtered_data
+                elif base_endpoint == 'wlanconf':
+                    # For wlanconf, include all fields but ensure _id is present
+                    if '_id' not in data:
+                        data = dict(data)  # Make a copy
+                        if path:
+                            data['_id'] = path
+                        elif hasattr(self, '_id') and self._id:
+                            data['_id'] = self._id
+                    update_data = data
+                    
+            logger.debug(f"Update data being sent: {update_data}")
+            
+            resp_try = self.unifi.make_request(url, 'PUT', data=update_data)
+            logger.debug(f"Raw response from API: {resp_try}")
+            if resp_try is not None:
+                response = resp_try
+                logger.debug(f"Successfully updated {base_endpoint} using {api_version}")
+                break
             else:
-                url = f"{self.api_path}/{site_name}/{self.endpoint}/{path}"
-        else:
-            if self.base_path:
-                url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{self._id}"
-            else:
-                url = f"{self.api_path}/{site_name}/{self.endpoint}/{self._id}"
-            path = None
-        response = self.unifi.make_request(url, 'PUT', data=data)
+                logger.debug(f"API returned None response for {url}")
+        
+        # Restore original endpoint
+        self.endpoint = base_endpoint
+        
+        if response is None:
+            logger.warning(f"Unable to update {base_endpoint}: Admin account lacks write permissions")
+            return None
+        
+        # Debug: Log the actual response structure
+        logger.debug(f"Update response type: {type(response)}")
+        logger.debug(f"Update response content: {response}")
+        
+        if not isinstance(response, dict):
+            actual_id = data.get('_id') or self._id or path
+            logger.error(f"Failed to update {base_endpoint} with ID {actual_id}: Unexpected response type {type(response)} - Response: {response}")
+            return None
+        
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully updated {self.endpoint} with ID {self._id if self._id else path} at site '{self.site.desc}'")
+            actual_id = data.get('_id') or self._id or path
+            logger.info(f"Successfully updated {base_endpoint} with ID {actual_id} at site '{self.site.desc}'")
+            
+            # Track in summary
+            try:
+                from summary_manager import log_and_track_updated
+                item_name = data.get('name', f'ID:{actual_id}')
+                # Map endpoint to friendly names
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(base_endpoint, base_endpoint)
+                logger.debug(f"Attempting to track updated item: {item_type}:{item_name} at {self.site.desc}")
+                log_and_track_updated(item_type, item_name, self.site.desc, "replace")
+                logger.debug(f"Successfully tracked updated item in summary")
+            except ImportError:
+                # summary_manager may not be available in all contexts
+                logger.debug("summary_manager not available for tracking")
+                pass
+            except Exception as e:
+                # Don't let summary tracking break the main functionality
+                logger.error(f"Failed to track update in summary: {e}")
+                import traceback
+                logger.debug(f"Summary tracking error traceback: {traceback.format_exc()}")
+            
             return response.get('data', {})
         else:
-            logger.error(f"Failed to update {self.endpoint} with ID {self._id}: {response}")
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            error_rc = meta.get('rc', 'Unknown rc')
+            actual_id = data.get('_id') or self._id or path
+            logger.error(f"Failed to update {base_endpoint} with ID {actual_id}: rc={error_rc}, msg={error_msg}")
+            logger.error(f"Full response: {response}")
             return None
-
-    def delete(self, item_id: int = None):
+        
+    def delete(self, item_id: int = None, dry_run: bool = False):
         """
         Delete an item from a specific endpoint using its ID. This method sends a DELETE request
         to the appropriate URL and logs the success of the deletion operation.
@@ -217,20 +503,77 @@ class BaseResource:
         :raises ValueError: If no `item_id` is provided and the `_id` attribute is also not set.
         """
         site_name = self.site.name
+        site_id = getattr(self.site, '_id', None)
+        site_tokens = [t for t in [site_name, site_id] if t]
         if not item_id:
             item_id = self._id
         if not item_id:
             raise ValueError(f'Item ID required to delete {self.endpoint}.')
-        if self.base_path:
-            url = f"{self.api_path}/{site_name}/{self.base_path}/{self.endpoint}/{item_id}"
-        else:
-            url = f"{self.api_path}/{site_name}/{self.endpoint}/{item_id}"
-        response = self.unifi.make_request(url, 'DELETE')
+        
+        # Handle dry-run mode
+        if dry_run:
+            logger.info(f"🔍 DRY RUN: Would delete {self.endpoint} with ID '{item_id}' at site '{self.site.desc}'")
+            
+            # Track in summary for dry-run
+            try:
+                from summary_manager import log_and_track_deleted
+                endpoint_map = {
+                    'wlanconf': 'WLAN',
+                    'networkconf': 'Network', 
+                    'radiusprofile': 'Radius Profile',
+                    'portconf': 'Port Profile',
+                    'usergroup': 'User Group',
+                    'apgroup': 'AP Group'
+                }
+                item_type = endpoint_map.get(self.endpoint, self.endpoint)
+                log_and_track_deleted(item_type, f"ID:{item_id}", self.site.desc, "delete")
+            except Exception:
+                pass  # Don't let summary tracking break dry-run
+            
+            # Return mock successful response
+            return {'meta': {'rc': 'ok'}, 'data': [{'_id': item_id}]}
+        
+        # Build URLs for delete (add item_id to endpoint)
+        base_endpoint = self.endpoint
+        
+        # Use endpoint registry to get base URLs, then add item_id
+        base_candidates = get_resource_candidate_urls(base_endpoint, site_tokens)
+        candidates = [(f"{url}/{item_id}", api_version) for url, api_version in base_candidates]
+        
+        response = {}
+        for url, api_version in candidates:
+            logger.debug(f"Trying {base_endpoint} delete endpoint: {url} (API version: {api_version})")
+            resp_try = self.unifi.make_request(url, 'DELETE')
+            if resp_try:
+                response = resp_try
+                logger.debug(f"Successfully deleted {base_endpoint} using {api_version}")
+                break
+        
+        if response is None:
+            logger.warning(f"Unable to delete {base_endpoint}: Admin account lacks write permissions")
+            return False
+        
         if response.get("meta", {}).get('rc') == 'ok':
-            logger.info(f"Successfully deleted {self.endpoint} with ID {item_id} at site '{site_name}'")
+            logger.info(f"Successfully deleted {base_endpoint} with ID {item_id} at site '{site_name}'")
             return True
         else:
-            logger.error(f"Failed to delete {self.endpoint} with ID {item_id} at site {site_name}: {response}")
+            meta = response.get('meta', {})
+            error_msg = meta.get('msg', 'Unknown error')
+            
+            # Handle specific error cases with friendly messages
+            if error_msg == 'api.err.NoDelete' and self.endpoint == 'radiusprofile':
+                # Check if this is the Default radius profile by looking it up
+                try:
+                    # Try to get the item name to check if it's Default
+                    existing_items = self.all()
+                    for item in existing_items:
+                        if item.get('_id') == item_id and item.get('name', '').lower() == 'default':
+                            logger.info(f'Cannot delete "Default" radius profile. This is expected, ignoring error message.')
+                            return False
+                except:
+                    pass  # If we can't check, fall through to normal error handling
+            
+            logger.error(f"Failed to delete {base_endpoint} with ID {item_id} at site {site_name}: {error_msg}")
             return False
 
     def backup(self, backup_dir: str):

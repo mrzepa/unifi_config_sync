@@ -2,11 +2,10 @@ import os
 import argparse
 import copy
 import logging
-import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
 import warnings
-from icecream import ic
 import config
 import global_settings
 import network_conf
@@ -16,6 +15,7 @@ import wlan_conf
 from utils import get_valid_names_from_dir, process_single_controller, validate_names, setup_logging
 from dotenv import load_dotenv
 from backup_ports import backup_single_controller
+from config_dependencies import validate_config_dependencies, get_deployment_order
 
 env_path = os.path.join(os.path.expanduser("~"), ".env")
 load_dotenv()
@@ -23,6 +23,16 @@ load_dotenv()
 warnings.simplefilter("ignore", InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
+
+def permission_error_handler():
+    """Called when a permission error is detected in any thread"""
+    from unifi.permission_flag import set_permission_error
+    set_permission_error()
+    logger.warning("Permission error detected - stopping all threads...")
+
+# Reset permission error flag at start
+from unifi.permission_flag import reset_permission_error
+reset_permission_error()
 
 if __name__ == "__main__":
     ENDPOINT = 'Global'
@@ -34,6 +44,13 @@ if __name__ == "__main__":
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose output (debug level logging)"
+    )
+    
+    # Add the dry-run flag
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview changes without applying them (shows what would be created/updated/deleted)"
     )
 
     # Create mutually exclusive group for -g/--get, -a/--add, -r/--replace, -d/--delete
@@ -55,6 +72,13 @@ if __name__ == "__main__":
     group.add_argument("-d", "--delete",
                        action="store_true",
                        help=f"Delete {ENDPOINT}.")
+
+    # Add module selection option
+    parser.add_argument(
+        "-m", "--module",
+        choices=['network_conf', 'radius_profiles', 'port_profiles', 'wlan_conf', 'global_settings'],
+        help="Test only a specific module (e.g., network_conf)"
+    )
 
     inex = parser.add_mutually_exclusive_group(required=False)
     inex.add_argument(
@@ -87,14 +111,25 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Read in the environment variables
-    try:
-        ui_username = os.getenv("UI_USERNAME")
-        ui_password = os.getenv("UI_PASSWORD")
-        ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_username = os.getenv("UI_USERNAME")
+    ui_password = os.getenv("UI_PASSWORD")
+    ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_api_key = os.getenv("UI_API_KEY")
 
-    except KeyError as e:
-        logger.exception("Unifi username or password is missing from environment variables.")
-        raise SystemExit(1)
+    # Check if API key auth is disabled
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        # API key auth is disabled, require username/password/mfa
+        if not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("SKIP_API_KEY_AUTH is True. Provide UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            raise SystemExit(1)
+        logger.info("API key authentication disabled (SKIP_API_KEY_AUTH=True)")
+    else:
+        # Require either API key OR username/password/mfa
+        if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            raise SystemExit(1)
 
     # get the list of controllers
     controller_list = config.CONTROLLERS
@@ -116,6 +151,45 @@ if __name__ == "__main__":
                     'port_profiles': {'endpoint': 'Port Profiles'},
                     'wlan_conf': {'endpoint': 'WLANs'},
                     'global_settings': {'endpoint': 'Global Settings'}}
+
+    # Filter modules if --module argument is provided
+    if args.module:
+        logger.info(f"Testing only module: {args.module}")
+        # Keep only the specified module
+        module_mapping = {args.module: module_mapping[args.module]}
+        context_dict = {args.module: context_dict[args.module]}
+
+    # Get the configuration types being processed
+    config_types = list(context_dict.keys())
+    
+    # Validate dependencies and get proper deployment order
+    if not args.get:  # Dependencies only matter for add/replace/delete operations
+        logger.info("Validating configuration dependencies...")
+        
+        # Use smart dependency validation that checks existing resources on target sites
+        # This allows deploying WLAN configs when VLANs already exist on the controller
+        if not validate_config_dependencies(config_types, check_existing_resources=True):
+            logger.error("Dependency validation failed. Please check the deployment order.")
+            sys.exit(1)
+        
+        logger.info("✅ Smart dependency validation enabled - checking existing resources on target sites")
+        logger.info("   • VLANs, RADIUS profiles, and other dependencies will be validated on each target site")
+        logger.info("   • No need to deploy dependencies if they already exist on the controller")
+        
+        # Still use deployment order for consistency, but don't require all dependencies to be in deployment list
+        ordered_types = get_deployment_order(config_types)
+        logger.info(f"Processing order: {' -> '.join(ordered_types)}")
+        
+        # Reorder context_dict and module_mapping according to dependencies
+        ordered_context_dict = {}
+        ordered_module_mapping = {}
+        for config_type in ordered_types:
+            if config_type in context_dict:
+                ordered_context_dict[config_type] = context_dict[config_type]
+                ordered_module_mapping[config_type] = module_mapping[config_type]
+        
+        context_dict = ordered_context_dict
+        module_mapping = ordered_module_mapping
 
     # Get the directory for storing the items
     valid_names = []
@@ -142,13 +216,11 @@ if __name__ == "__main__":
     if args.add:
         logging.info(f"Option selected: Add")
 
-        # Remove "global_settings", it does not support add_item_to_site
-        context_dict.pop("global_settings", None)
-
         for context_item in context_dict:
             module = module_mapping[context_item]
             # Retrieve the function object instead of a string.
             if context_item == 'global_settings':
+                # global_settings does not support add_item_to_site, use replace_item_at_site instead
                 context_dict[context_item]['process_function'] = module.replace_item_at_site
             else:
                 context_dict[context_item]['process_function'] = module.add_item_to_site
@@ -158,10 +230,10 @@ if __name__ == "__main__":
 
         if args.include_names:
             if not validate_names(args.include_names, valid_names, 'include-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, "Invalid include-names")
         if args.exclude_names:
             if not validate_names(args.exclude_names, valid_names, 'exclude-names'):
-                raise argparse.ArgumentError
+                raise argparse.ArgumentError(None, "Invalid exclude-names")
 
     if args.replace:
         logging.info(f"Option selected: Replace")
@@ -172,7 +244,7 @@ if __name__ == "__main__":
 
         if not args.include_names:
             logger.error(f"--replace requires a list of names to replace using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "--replace requires a list of names to replace using --include-names.")
 
         if not valid_names:
             raise ValueError(f"Base template directories do not exist. Please run with -g/--get first")
@@ -181,7 +253,7 @@ if __name__ == "__main__":
             # Log the items to be replaced
             logging.info(f"Names to be replaced: {args.include_names}")
         else:
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "Invalid include-names for replacement")
 
     if args.delete:
         logging.info(f"Option selected: Delete")
@@ -199,7 +271,7 @@ if __name__ == "__main__":
 
         if not args.include_names:
             logger.error(f"--delete requires a list of names to delete using --include-names.")
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "--delete requires a list of names to delete using --include-names.")
 
         if not valid_names:
             raise ValueError(f"Base template directories do not exist. Please run with -g/--get first")
@@ -207,7 +279,7 @@ if __name__ == "__main__":
         if validate_names(args.include_names, valid_names, 'include-names'):
             logging.info(f"Names to be deleted: {args.include_names}")
         else:
-            raise argparse.ArgumentError
+            raise argparse.ArgumentError(None, "Invalid include-names for deletion")
 
     ui_name_filename = args.site_names_file
     ui_name_path = os.path.join(config.INPUT_DIR, ui_name_filename)
@@ -228,6 +300,12 @@ if __name__ == "__main__":
         base_context['verbose'] = True
     else:
         base_context['verbose'] = False
+        
+    if args.dry_run:
+        base_context['dry_run'] = True
+        logger.info("🔍 DRY RUN MODE - No changes will be applied")
+    else:
+        base_context['dry_run'] = False
 
     # backup unifi switch ports
     # Use concurrent.futures to handle multithreading
@@ -237,7 +315,8 @@ if __name__ == "__main__":
                                                 base_context,
                                                 ui_username,
                                                 ui_password,
-                                                ui_mfa_secret): controller for controller in
+                                                ui_mfa_secret,
+                                                ui_api_key): controller for controller in
                                 controller_list}
 
         # Wait for all controller-processing threads to complete
@@ -266,14 +345,45 @@ if __name__ == "__main__":
                                                     context,
                                                     ui_username,
                                                     ui_password,
-                                                    ui_mfa_secret): controller for controller in
+                                                    ui_mfa_secret,
+                                                    ui_api_key,
+                                                    permission_error_handler): controller for controller in
                                     controller_list}
 
             # Wait for all controller-processing threads to complete
+            permission_errors = []
             for future in as_completed(future_to_controller):
+                controller = future_to_controller[future]
+                
+                # Check if permission error was detected in another thread
+                from unifi.permission_flag import is_permission_error_detected
+                if is_permission_error_detected():
+                    # Cancel remaining futures
+                    for f in future_to_controller:
+                        if not f.done():
+                            f.cancel()
+                    break
+                
                 try:
                     future.result()
+                except PermissionError as e:
+                    # Collect permission errors for summary
+                    permission_errors.append(str(e))
                 except Exception as e:
                     # Handle exceptions for individual tasks
-                    logger.exception(e)
+                    logger.exception(f"Error processing controller {controller}: {e}")
                     continue
+            
+            # Provide permission error summary if any occurred
+            if permission_errors:
+                logger.warning("\n" + "=" * 80)
+                logger.warning("PERMISSION SUMMARY")
+                logger.warning("One or more controllers encountered permission issues.")
+                logger.warning("This is expected if your admin account has read-only access.")
+                logger.warning("To enable write operations, see the solutions above.")
+                logger.warning("=" * 80)
+                sys.exit(1)
+    
+    # Generate and display the operation summary
+    from summary_manager import generate_summary
+    generate_summary()

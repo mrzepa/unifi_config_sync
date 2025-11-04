@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from urllib3.exceptions import InsecureRequestWarning
 from unifi.unifi import Unifi
@@ -162,7 +161,7 @@ if __name__ == "__main__":
     if 'Default' in template_vlans:
         template_vlans.remove('Default')
 
-    process_fucntion = vlan_report
+    process_function = vlan_report
     report = {}
     # go through each controller
     for controller in controller_list:

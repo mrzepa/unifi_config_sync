@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
@@ -14,6 +13,9 @@ from unifi.unifi import Unifi
 import config
 import utils
 from utils import setup_logging, get_filtered_files, get_valid_names_from_dir, validate_names
+from rollback_manager import create_config_backup
+from config_dependencies import validate_site_dependencies
+from ap_group_manager import ensure_ap_group_for_wlan
 import threading
 
 site_data_lock = threading.Lock()
@@ -136,8 +138,16 @@ def delete_item_from_site(unifi, site_name: str, context: dict):
         if item_id:
             logger.info(f"Deleting {ENDPOINT} '{name}' from site '{site_name}'")
             item_to_backup = ui_site.wlan_conf.get(_id=item_id)
-            item_to_backup.backup(config.BACKUP_DIR)
-            response = ui_site.wlan_conf.delete(item_id)
+            # Use rollback manager instead of UniFi API backup
+            from rollback_manager import create_config_backup
+            create_config_backup(
+                config_type="wlanconf",
+                site_name=site_name,
+                controller_url=str(unifi.base_url),
+                configs=[item_to_backup.data],  # Convert to dict via .data property
+                operation="delete"
+            )
+            response = ui_site.wlan_conf.delete(item_id, dry_run=context.get('dry_run', False))
             if response:
                 logger.info(f"Successfully deleted {ENDPOINT} '{name}' from site '{site_name}'")
             else:
@@ -216,21 +226,63 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             logger.debug(f"Reading {ENDPOINT} from file: {file_path}")
             new_item = read_json_file(file_path)
             item_name = new_item.get("name")
-            # Check if the VLAN exists in the existing items
+            
+            # Smart dependency validation - check if dependencies exist in the actual site
+            missing_deps = validate_site_dependencies(unifi, site_name, 'wlan_conf', new_item)
+            
+            # Handle missing AP groups by creating them or using default
+            if missing_deps and any('AP group' in dep for dep in missing_deps):
+                ap_group_name = new_item.get("ap_group_ids_name")
+                if isinstance(ap_group_name, list) and ap_group_name:
+                    ap_group_name = ap_group_name[0]  # Take first AP group name
+                
+                if ap_group_name:
+                    logger.info(f"Handling missing AP group '{ap_group_name}' for WLAN '{item_name}' in site '{site_name}'")
+                    ap_group_id = ensure_ap_group_for_wlan(unifi, site_name, ap_group_name)
+                    
+                    if ap_group_id:
+                        # Check if we got the default AP group (for single AP sites)
+                        existing_groups = ui_site.ap_groups.all()
+                        default_group_names = ["All APs", "Default", "All APs (default)"]
+                        is_default_group = False
+                        
+                        for group in existing_groups:
+                            if group.get("_id") == ap_group_id and group.get("name") in default_group_names:
+                                is_default_group = True
+                                break
+                        
+                        if is_default_group:
+                            logger.info(f"Site '{site_name}' has single AP - using default AP group '{next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'Unknown')}' instead of '{ap_group_name}'")
+                            # Update the AP group name to match what we actually used
+                            if isinstance(new_item.get("ap_group_ids_name"), list):
+                                new_item["ap_group_ids_name"] = [next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'All APs')]
+                            else:
+                                new_item["ap_group_ids_name"] = next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'All APs')
+                        else:
+                            logger.info(f"Successfully created AP group '{ap_group_name}' for WLAN '{item_name}'")
+                        
+                        # Remove AP group from missing_deps since we handled it
+                        missing_deps = [dep for dep in missing_deps if 'AP group' not in dep]
+                    else:
+                        logger.error(f"Failed to handle AP group '{ap_group_name}' for WLAN '{item_name}'")
+            
+            # Check for other missing dependencies (VLANs, RADIUS profiles, etc.)
+            if missing_deps:
+                logger.error(f"WLAN '{item_name}' has missing dependencies in site '{site_name}':")
+                for dep in missing_deps:
+                    logger.error(f"   • {dep}")
+                logger.error(f"   Please ensure these resources exist on site '{site_name}' before deploying WLAN configurations")
+                continue
+            else:
+                logger.debug(f"✅ All dependencies for WLAN '{item_name}' exist in site '{site_name}'")
+
+            # Check if the WLAN already exists - for add operation, skip existing WLANs
             if item_name in existing_item_names:
-                logger.info(f'WLAN name {item_name} already exists. Replacing it with new configuration.')
-                existing_item = existing_item_map[item_name]
-                item_id = existing_item.get("_id")  # Retrieve the _id for the update
-
-                if not item_id:
-                    logger.error(
-                        f"Existing item '{item_name}' has no '_id'. Unable to replace this item. Skipping."
-                    )
-                    continue
-
-                item_to_backup = ui_site.wlan_conf.get(_id=item_id)
-                item_to_backup.backup(config.BACKUP_DIR)
-                ui_site.wlan_conf.delete(item_id)
+                logger.info(f'WLAN name {item_name} already exists. Skipping (use --replace to update existing WLANs).')
+                # Track in summary
+                from summary_manager import log_and_track_skipped
+                log_and_track_skipped("WLAN", item_name, site_name, "add", "already exists")
+                continue
 
             # Add vlans ID if the corresponding name exists
             vlan_name = new_item.get("networkconf_id_name")
@@ -250,16 +302,57 @@ def add_item_to_site(unifi, site_name: str, context: dict):
             # Add ap_group_ids if the corresponding names exist
             ap_group_names = new_item.get("ap_group_ids_name", [])
             if ap_group_names:
-                ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                ap_group_ids = []
+                
+                # Refresh AP groups to get the newly created one
+                try:
+                    updated_ap_groups = ui_site.ap_groups.all()
+                    updated_ap_groups_dict = {ag.get("name"): ag.get("_id") for ag in updated_ap_groups}
+                except Exception as e:
+                    logger.warning(f"Failed to refresh AP groups: {e}")
+                    updated_ap_groups_dict = ap_groups
+                
+                for name in ap_group_names:
+                    if name in updated_ap_groups_dict:
+                        ap_group_ids.append(updated_ap_groups_dict[name])
+                    else:
+                        logger.error(f"AP group '{name}' not found in target site '{site_name}' and could not be created.")
+                
                 if ap_group_ids:  # Only add if there are valid IDs
                     new_item["ap_group_ids"] = ap_group_ids
+                    logger.info(f"Using AP group(s) {ap_group_names} for WLAN '{item_name}' in site '{site_name}'")
+                else:
+                    # No valid AP groups found - this should not happen with auto-creation
+                    logger.error(f"No valid AP groups found for WLAN '{item_name}' in site '{site_name}'. Cannot proceed.")
+                    continue
 
             # Make the request to add the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            response = ui_site.wlan_conf.create(new_item)
+            response = ui_site.wlan_conf.create(new_item, dry_run=context.get('dry_run', False))
             if isinstance(response, dict):
                 if response.get('rc') == 'error':
-                    logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {response.get("msg")}')
+                    error_msg = response.get("msg")
+                    if error_msg == 'api.err.TooManyWirelessNetwork':
+                        # Extract device info from the response for friendly message
+                        device_mac = response.get('device_mac', 'Unknown')
+                        wlan_count = response.get('wlan_count', 'Unknown')
+                        max_wlan = response.get('max_wlan', 'Unknown')
+                        error_details = f"Too Many Wireless Networks for device {device_mac} ({wlan_count}/{max_wlan})"
+                        logger.error(f"{error_details}. Cannot create WLAN '{item_name}'.")
+                        
+                        # Track in summary
+                        from summary_manager import get_summary
+                        summary = get_summary(site_name, "add")
+                        summary.set_wlan_limit_reached()
+                        summary.add_failed_item("WLAN", item_name, error_details)
+                    else:
+                        logger.error(f'Failed to upload {ENDPOINT} {item_name} at site {site_name}: {error_msg}')
+                        from summary_manager import log_and_track_failed
+                        log_and_track_failed("WLAN", item_name, site_name, "add", error_msg)
+                else:
+                    # Success - track in summary
+                    from summary_manager import log_and_track_created
+                    log_and_track_created("WLAN", item_name, site_name, "add")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -341,7 +434,64 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                     continue
 
                 item_to_backup = ui_site.wlan_conf.get(_id=item_id)
-                item_to_backup.backup(config.BACKUP_DIR)
+                # Use rollback manager instead of UniFi API backup
+                from rollback_manager import create_config_backup
+                create_config_backup(
+                    config_type="wlanconf",
+                    site_name=site_name,
+                    controller_url=str(unifi.base_url),
+                    configs=[item_to_backup.data],  # Convert to dict via .data property
+                    operation="replace"
+                )
+
+                # Smart dependency validation - check if dependencies exist in the actual site
+                missing_deps = validate_site_dependencies(unifi, site_name, 'wlan_conf', new_item)
+                
+                # Handle missing AP groups by creating them or using default
+                if missing_deps and any('AP group' in dep for dep in missing_deps):
+                    ap_group_name = new_item.get("ap_group_ids_name")
+                    if isinstance(ap_group_name, list) and ap_group_name:
+                        ap_group_name = ap_group_name[0]  # Take first AP group name
+                    
+                    if ap_group_name:
+                        logger.info(f"Handling missing AP group '{ap_group_name}' for WLAN '{item_name}' in site '{site_name}'")
+                        ap_group_id = ensure_ap_group_for_wlan(unifi, site_name, ap_group_name)
+                        
+                        if ap_group_id:
+                            # Check if we got the default AP group (for single AP sites)
+                            existing_groups = ui_site.ap_groups.all()
+                            default_group_names = ["All APs", "Default", "All APs (default)"]
+                            is_default_group = False
+                            
+                            for group in existing_groups:
+                                if group.get("_id") == ap_group_id and group.get("name") in default_group_names:
+                                    is_default_group = True
+                                    break
+                            
+                            if is_default_group:
+                                logger.info(f"Site '{site_name}' has single AP - using default AP group '{next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'Unknown')}' instead of '{ap_group_name}'")
+                                # Update the AP group name to match what we actually used
+                                if isinstance(new_item.get("ap_group_ids_name"), list):
+                                    new_item["ap_group_ids_name"] = [next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'All APs')]
+                                else:
+                                    new_item["ap_group_ids_name"] = next((g.get('name') for g in existing_groups if g.get('_id') == ap_group_id), 'All APs')
+                            else:
+                                logger.info(f"Successfully created AP group '{ap_group_name}' for WLAN '{item_name}'")
+                            
+                            # Remove AP group from missing_deps since we handled it
+                            missing_deps = [dep for dep in missing_deps if 'AP group' not in dep]
+                        else:
+                            logger.error(f"Failed to handle AP group '{ap_group_name}' for WLAN '{item_name}'")
+                
+                # Check for other missing dependencies (VLANs, RADIUS profiles, etc.)
+                if missing_deps:
+                    logger.error(f"WLAN '{item_name}' has missing dependencies in site '{site_name}':")
+                    for dep in missing_deps:
+                        logger.error(f"   • {dep}")
+                    logger.error(f"   Please ensure these resources exist on site '{site_name}' before deploying WLAN configurations")
+                    continue
+                else:
+                    logger.debug(f"✅ All dependencies for WLAN '{item_name}' exist in site '{site_name}'")
 
                 # Add vlans ID if the corresponding name exists
                 vlan_name = new_item.get("networkconf_id_name")
@@ -361,13 +511,44 @@ def replace_item_at_site(unifi, site_name: str, context: dict):
                 # Add ap_group_ids if the corresponding names exist
                 ap_group_names = new_item.get("ap_group_ids_name", [])
                 if ap_group_names:
-                    ap_group_ids = [ap_groups[name] for name in ap_group_names if name in ap_groups]
+                    ap_group_ids = []
+                    
+                    # Refresh AP groups to get the newly created one
+                    try:
+                        updated_ap_groups = ui_site.ap_groups.all()
+                        updated_ap_groups_dict = {ag.get("name"): ag.get("_id") for ag in updated_ap_groups}
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh AP groups: {e}")
+                        updated_ap_groups_dict = ap_groups
+                    
+                    for name in ap_group_names:
+                        if name in updated_ap_groups_dict:
+                            ap_group_ids.append(updated_ap_groups_dict[name])
+                        else:
+                            logger.error(f"AP group '{name}' not found in target site '{site_name}' and could not be created.")
+                    
                     if ap_group_ids:  # Only add if there are valid IDs
                         new_item["ap_group_ids"] = ap_group_ids
+                        logger.info(f"Using AP group(s) {ap_group_names} for WLAN '{item_name}' in site '{site_name}'")
+                    else:
+                        # No valid AP groups found - this should not happen with auto-creation
+                        logger.error(f"No valid AP groups found for WLAN '{item_name}' in site '{site_name}'. Cannot proceed.")
+                        continue
 
                 # Make the request to update the item config
                 logger.debug(f"Updating {ENDPOINT} '{item_name}' on site '{site_name}'")
-                response = ui_site.wlan_conf.update(new_item, item_id)
+                # Add the _id field to the update data - required by UniFi API
+                new_item["_id"] = item_id
+                response = ui_site.wlan_conf.update(new_item, item_id, dry_run=context.get('dry_run', False))
+                
+                # Track the update in summary
+                if response and not (isinstance(response, dict) and response.get('rc') == 'error'):
+                    from summary_manager import log_and_track_updated
+                    log_and_track_updated("WLAN", item_name, site_name, "replace")
+                elif isinstance(response, dict) and response.get('rc') == 'error':
+                    from summary_manager import log_and_track_failed
+                    error_msg = response.get('msg', 'Unknown error')
+                    log_and_track_failed("WLAN", item_name, site_name, "replace", error_msg)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -473,19 +654,19 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_name_list = None
 
     if args.get:
         logging.info(f"Option selected: Get {ENDPOINT}")
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
         # Can't validate the include/exclude names since we don't know what they are until after they are retrieved.
         site_names = [args.base_site_name]
 
     elif args.add:
         logging.info(f"Option selected: Add {ENDPOINT}")
-        process_fucntion = add_item_to_site
+        process_function = add_item_to_site
 
         if not valid_names:
             raise ValueError(f"{ENDPOINT} directory '{endpoint_dir}' does not exist. Please run with -g/--get first")
@@ -512,7 +693,7 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = replace_item_at_site
+        process_function = replace_item_at_site
 
     elif args.delete:
         logging.info(f"Option selected: Delete {ENDPOINT}")
@@ -527,10 +708,10 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be deleted: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = delete_item_from_site
+        process_function = delete_item_from_site
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

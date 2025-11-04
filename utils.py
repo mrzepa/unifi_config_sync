@@ -7,13 +7,12 @@ import json
 import os
 import threading
 from datetime import datetime, timedelta
-from icecream import ic
 
 logger = logging.getLogger(__name__)
 filelock = threading.Lock()
 site_data_lock = threading.Lock()
 
-def vlan_check(unifi, site_name: str):
+def vlan_check(unifi, site_name: str, operation: str = "unknown"):
     """
     Validates that all required VLANs exist for the specified site. Compares the
     current VLAN configuration of the given site with a predefined baseline to
@@ -27,6 +26,8 @@ def vlan_check(unifi, site_name: str):
     :type unifi: object
     :param site_name: The name of the site to validate VLANs for.
     :type site_name: str
+    :param operation: The operation type for summary tracking.
+    :type operation: str
     :return: Returns True if all required VLANs exist, otherwise False.
     :rtype: bool
     """
@@ -53,10 +54,16 @@ def vlan_check(unifi, site_name: str):
     missing_vlans = baseline_vlan_names - existing_vlan_names
     extra_vlans = existing_vlan_names - baseline_vlan_names
 
+    # Track in summary
+    from summary_manager import get_summary
+    summary = get_summary(site_name, operation)
+    
     if missing_vlans:
         logger.error(f"Missing VLANs in {site_name}: {', '.join(sorted(missing_vlans))}")
+        summary.add_missing_vlans(list(missing_vlans))
     if extra_vlans:
         logger.info(f"Extra VLANs in {site_name}: {', '.join(sorted(extra_vlans))}")
+        summary.add_extra_vlans(list(extra_vlans))
 
     return len(missing_vlans) == 0
 
@@ -189,7 +196,21 @@ def process_controller(unifi, context: dict):
             futures = []
             for site_name in site_names_to_process:
                 if not context.get('skip_vlan_check'):
-                    if not vlan_check(unifi, site_name):
+                    # Determine operation type from context
+                    operation = "unknown"
+                    process_function = context.get('process_function')
+                    if process_function:
+                        if hasattr(process_function, '__name__'):
+                            if 'add' in process_function.__name__:
+                                operation = "add"
+                            elif 'replace' in process_function.__name__:
+                                operation = "replace"
+                            elif 'delete' in process_function.__name__:
+                                operation = "delete"
+                            elif 'get' in process_function.__name__:
+                                operation = "get"
+                    
+                    if not vlan_check(unifi, site_name, operation):
                         logger.error(f'Vlans not matching, skipping {site_name}... ')
                         return None
                 futures.append(executor.submit(build_site_data, unifi, site_name, output_filename, make_template=False))
@@ -217,7 +238,7 @@ def process_controller(unifi, context: dict):
                 logger.exception(f"Error in process controller: {e}")
 
 
-def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str):
+def process_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None, permission_callback=None):
     """
     Processes a single controller by creating a Unifi instance, authenticating, and delegating the
     controller processing task. This function acts as a wrapper that prepares and initializes
@@ -225,19 +246,61 @@ def process_single_controller(controller, context: dict, username: str, password
 
     :param controller: The controller instance to be processed.
     :param context: Dictionary containing the context required for processing the controller.
-    :param username: Username to authenticate with the controller.
-    :param password: Password to authenticate with the controller.
-    :param mfa_secret: MFA secret for additional authentication layer.
+    :param username: Username to authenticate with the controller (global, same for all controllers).
+    :param password: Password to authenticate with the controller (global, same for all controllers).
+    :param mfa_secret: MFA secret for additional authentication layer (global, same for all controllers).
+    :param api_key: Global API key (fallback if no per-controller key is configured).
+    :param permission_callback: Callback function to call when permission error is detected.
     :return: The result of processing the given controller.
     """
-    unifi = Unifi(controller, username, password, mfa_secret)
+    # Check if API key auth is disabled in config
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        logger.debug(f"API key authentication skipped for: {controller} (SKIP_API_KEY_AUTH=True)")
+        controller_api_key = None
+    else:
+        # Get per-controller API key environment variable name if configured
+        controller_api_key_env = getattr(config, 'CONTROLLER_API_KEYS', {}).get(controller)
+        
+        if controller_api_key_env:
+            # Use per-controller API key from environment variable
+            controller_api_key = os.getenv(controller_api_key_env)
+            if controller_api_key:
+                logger.debug(f"Using per-controller API key from {controller_api_key_env} for: {controller}")
+            else:
+                logger.warning(f"Environment variable {controller_api_key_env} not found for controller: {controller}")
+                controller_api_key = None
+        else:
+            # No per-controller configuration
+            controller_api_key = None
+    
+    # Username/password/MFA are global (same across all controllers)
+    try:
+        unifi = Unifi(controller, username, password, mfa_secret, api_key=controller_api_key, permission_callback=permission_callback, force_modern_auth=skip_api_key_auth)
+    except PermissionError as e:
+        logger.error(f"Permission error for controller {controller}: {e}")
+        return None
+    except Exception as e:
+        if "AUTHENTICATION_FAILED_LIMIT_REACHED" in str(e):
+            # Rate limit error - exit gracefully without retrying other controllers
+            # The detailed error messages are already logged by the UniFi class, so just exit cleanly
+            raise SystemExit(1)
+        else:
+            logger.error(f"Authentication error for controller {controller}: {e}")
+            return None
 
     if not unifi.sites:
         return None
-    return process_controller(
-        unifi=unifi,
-        context=context,
-    )
+    
+    try:
+        return process_controller(
+            unifi=unifi,
+            context=context,
+        )
+    except PermissionError as e:
+        logger.error(f"Permission error during processing for controller {controller}: {e}")
+        return None
 
 def save_dicts_to_json(dict_list, output_dir="output"):
     """

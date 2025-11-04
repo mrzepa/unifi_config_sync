@@ -5,7 +5,6 @@ import sys
 import logging
 import warnings
 import requests
-from icecream import ic
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.exceptions import InsecureRequestWarning
@@ -104,6 +103,7 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
     """
     ui_site = unifi.sites[site_name]
     ENDPOINT = context.get("endpoint")
+    endpoint_dir = context.get("endpoint_dir")
     include_names = context.get("include_names_list")
     exclude_names = context.get("exclude_name_list")
     vlans = {}
@@ -156,10 +156,74 @@ def replace_item_at_site(unifi: Unifi, site_name: str, context: dict):
                 if key == "radiusprofile_id" and new_items['radiusprofile_id']:
                     new_items[key] = radius_profiles_dict[new_items['radiusprofile_id_name']]
 
-            # Make the request to add the item
+            # Make the request to update the item
             logger.debug(f"Uploading {ENDPOINT} '{item_name}' to site '{site_name}'")
-            path = f"{item_name}/{item_id}"
-            ui_site.setting.update(data=new_items, path=path)
+            
+            # Check if this is UniFi 9.5+ (has http_session attribute)
+            is_unifi_95_plus = hasattr(unifi, 'http_session') and unifi.http_session
+            
+            if is_unifi_95_plus:
+                # UniFi 9.5+ uses /set/setting/{key} endpoint pattern
+                logger.debug("Using UniFi 9.5+ global settings endpoint pattern")
+                
+                # Get the site name (not ID) for the request - this matches the browser request
+                site_name_for_request = ui_site.name
+                
+                # Build the correct endpoint URL
+                url = f"{unifi.base_url}/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}"
+                
+                logger.debug(f"Making POST request to: {url}")
+                logger.debug(f"Data being sent: {new_items}")
+                
+                # Make the direct POST request
+                response = unifi.make_request(f"/proxy/network/api/s/{site_name_for_request}/set/setting/{item_name}", method="POST", data=new_items)
+                
+                if response and response.get('meta', {}).get('rc') == 'ok':
+                    logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                    
+                    # Track the update in summary
+                    try:
+                        from summary_manager import log_and_track_updated
+                        log_and_track_updated("Global Settings", item_name, site_name, "replace")
+                    except Exception:
+                        pass  # Don't let summary tracking break the operation
+                else:
+                    error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
+                    logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
+                    if response:
+                        logger.error(f"Full response: {response}")
+            else:
+                # Older UniFi versions use standard setting endpoint with PUT request
+                logger.debug("Using legacy UniFi global settings endpoint pattern")
+                
+                # Use the standard update method for older versions
+                # The item_id was found earlier in the function
+                for item in existing_items:
+                    if item.get("key") == item_name:
+                        item_id = item.get("_id")
+                        break
+                else:
+                    logger.error(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
+                    raise ValueError(f'Failed to find existing {ENDPOINT} with key "{item_name}" in site "{site_name}"')
+                
+                # Use standard update method with item_id
+                path = f"{item_id}"
+                response = ui_site.setting.update(data=new_items, path=path, dry_run=context.get('dry_run', False))
+                
+                if response and response.get('meta', {}).get('rc') == 'ok':
+                    logger.info(f"Successfully updated {ENDPOINT} '{item_name}' at site '{site_name}'")
+                    
+                    # Track the update in summary
+                    try:
+                        from summary_manager import log_and_track_updated
+                        log_and_track_updated("Global Settings", item_name, site_name, "replace")
+                    except Exception:
+                        pass  # Don't let summary tracking break the operation
+                else:
+                    error_msg = response.get('meta', {}).get('msg', 'Unknown error') if response else 'No response'
+                    logger.error(f"Failed to update {ENDPOINT} '{item_name}': {error_msg}")
+                    if response:
+                        logger.error(f"Full response: {response}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file '{file_name}': {e}")
@@ -267,7 +331,7 @@ if __name__ == "__main__":
 
     MAX_CONTROLLER_THREADS = config.MAX_CONTROLLER_THREADS
 
-    process_fucntion = None
+    process_function = None
     include_names_list = None
     exclude_name_list = None
 
@@ -277,7 +341,7 @@ if __name__ == "__main__":
             logger.error(f"--get requires a list of {ENDPOINT} keys to get using --include-names. Valid keys are: {valid_keys}")
             sys.exit(1)
 
-        process_fucntion = get_templates_from_base_site
+        process_function = get_templates_from_base_site
 
         if validate_names(args.include_names, valid_keys, 'include-names'):
             logger.info(f'{ENDPOINT} keys to be retrieved: {args.include_names}')
@@ -305,14 +369,14 @@ if __name__ == "__main__":
             logging.info(f"{ENDPOINT} names to be replaced: {args.include_names}")
         else:
             sys.exit(1)
-        process_fucntion = replace_item_at_site
+        process_function = replace_item_at_site
 
     elif args.delete:
         logger.warning(f'Option: Delete not allowed for {ENDPOINT}.')
         sys.exit(1)
 
-    if process_fucntion:
-        context = {'process_function': process_fucntion,
+    if process_function:
+        context = {'process_function': process_function,
                    'site_names': site_names,
                    'endpoint_dir': endpoint_dir,
                    'include_names_list': args.include_names,

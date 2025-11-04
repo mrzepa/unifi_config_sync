@@ -124,7 +124,7 @@ def process_backups(unifi, context: dict):
             except Exception as e:
                 logger.exception(f"Error in process controller: {e}")
 
-def backup_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str):
+def backup_single_controller(controller, context: dict, username: str, password: str, mfa_secret: str, api_key: str = None):
     """
     Processes a single controller by creating a Unifi instance, authenticating, and delegating the
     controller processing task. This function acts as a wrapper that prepares and initializes
@@ -137,11 +137,20 @@ def backup_single_controller(controller, context: dict, username: str, password:
     :param mfa_secret: MFA secret for additional authentication layer.
     :return: The result of processing the given controller.
     """
-    unifi = Unifi(controller, username, password, mfa_secret)
+    try:
+        unifi = Unifi(controller, username, password, mfa_secret, api_key=api_key)
+    except Exception as e:
+        if "AUTHENTICATION_FAILED_LIMIT_REACHED" in str(e):
+            # Rate limit error - exit gracefully without retrying other controllers
+            # The detailed error messages are already logged by the UniFi class, so just exit cleanly
+            raise SystemExit(1)
+        else:
+            logger.error(f"Authentication error for controller {controller}: {e}")
+            return None
     if context['verbose']:
         logger.debug('Sites found on controller:')
         for site in unifi.sites:
-            logger.debug("\x1b[31m%s\x1b[0m",site)
+            logger.debug(f"\x1b[31m{site}\x1b[0m")
 
     if not unifi.sites:
         return None
@@ -181,14 +190,25 @@ if __name__ == "__main__":
         setup_logging(logging.INFO)
 
     # Read in the environment variables
-    try:
-        ui_username = os.getenv("UI_USERNAME")
-        ui_password = os.getenv("UI_PASSWORD")
-        ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_username = os.getenv("UI_USERNAME")
+    ui_password = os.getenv("UI_PASSWORD")
+    ui_mfa_secret = os.getenv("UI_MFA_SECRET")
+    ui_api_key = os.getenv("UI_API_KEY")
 
-    except KeyError as e:
-        logger.critical("Unifi username or password is missing from environment variables.")
-        raise SystemExit(1)
+    # Check if API key auth is disabled
+    skip_api_key_auth = getattr(config, 'SKIP_API_KEY_AUTH', False)
+    
+    if skip_api_key_auth:
+        # API key auth is disabled, require username/password/mfa
+        if not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("SKIP_API_KEY_AUTH is True. Provide UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            raise SystemExit(1)
+        logger.info("API key authentication disabled (SKIP_API_KEY_AUTH=True)")
+    else:
+        # Require either API key OR username/password/mfa
+        if not ui_api_key and not all([ui_username, ui_password, ui_mfa_secret]):
+            logger.critical("Provide either UI_API_KEY or UI_USERNAME, UI_PASSWORD, and UI_MFA_SECRET.")
+            raise SystemExit(1)
 
     # get the list of controllers
     controller_list = config.CONTROLLERS
@@ -210,7 +230,8 @@ if __name__ == "__main__":
                                                 context,
                                                 ui_username,
                                                 ui_password,
-                                                ui_mfa_secret): controller for controller in
+                                                ui_mfa_secret,
+                                                ui_api_key): controller for controller in
                                 controller_list}
 
         # Wait for all controller-processing threads to complete
